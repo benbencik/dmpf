@@ -47,6 +47,53 @@ impl<Output: DpfOutput> OmrDmpf<Output> for LvlDpfDmpf {
     }
 }
 
+// server database of all message shares
+pub struct LvlDpfDmpfDb<Output> {
+    input_bits: usize,             // tree depth
+    num_points: usize,             // K points of the DMPF
+    num_messages: usize,           // N max number of messages
+    messages_count: usize,         // current number of messages <= N
+    roots: Vec<Node>,              // len K*N, index [k*N + n]
+    root_bits: Vec<bool>,          // len K*N, index [k*N + n]
+    cws: Vec<Vec<CorrectionWord>>, // len K, each len input_bits*N, index [k][level*N + n]
+    last_cw: Vec<Output>,          // len K*N, index [k*N + n]
+}
+
+impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
+    pub fn new(input_bits: usize, num_points: usize, num_messages: usize) -> Self {
+        Self {
+            input_bits,
+            num_points,
+            num_messages,
+            messages_count: 0,
+            roots: vec![Node::default(); num_points * num_messages],
+            root_bits: vec![false; num_points * num_messages],
+            cws: vec![
+                vec![
+                    CorrectionWord::new(Node::default(), false, false);
+                    input_bits * num_messages
+                ];
+                num_points
+            ],
+            last_cw: vec![Output::default(); num_points * num_messages],
+        }
+    }
+
+    pub fn insert(&mut self, key: LvlDpfDmpfKey<Output>) {
+        assert!(self.messages_count < self.num_messages, "db full capacity");
+        for k in 0..self.num_points {
+            let dpf_key = &key.dpf_keys[k];
+            self.roots[k * self.num_messages + self.messages_count] = dpf_key.root;
+            self.root_bits[k * self.num_messages + self.messages_count] = dpf_key.root_bit;
+            self.last_cw[k * self.num_messages + self.messages_count] = dpf_key.last_cw;
+            for level in 0..self.input_bits {
+                self.cws[k][level * self.num_messages + self.messages_count] = dpf_key.cws[level];
+            }
+        }
+        self.messages_count += 1;
+    }
+}
+
 pub struct LvlDpfDmpfSession {
     cur_seeds: Vec<Node>,
     next_seeds: Vec<Node>,
@@ -74,6 +121,8 @@ impl DmpfSession for LvlDpfDmpfSession {
         }
     }
 }
+
+// DMPF key given by the sender
 pub struct LvlDpfDmpfKey<Output> {
     dpf_keys: Vec<DpfKey<Output>>,
 }
@@ -230,96 +279,96 @@ impl<Output: DpfOutput> DpfKey<Output> {
             *output = output.neg()
         }
     }
-//     pub fn eval_all_xor_output_with_session(
-//         &self,
-//         output: &mut [Output],
-//         session: &mut LvlDpfDmpfSession,
-//     ) {
-//         let LvlDpfDmpfSession {
-//             cur_seeds,
-//             next_seeds,
-//             cur_signs,
-//             next_signs,
-//         } = session;
-//         self.eval_all_with_cache_xor_output(cur_seeds, next_seeds, cur_signs, next_signs, output)
-//     }
-//     pub fn eval_all_with_cache_xor_output<'a>(
-//         &self,
-//         cur_seeds_orig: &'a mut [Node],
-//         next_seeds_orig: &mut [Node],
-//         cur_signs_orig: &'a mut [bool],
-//         next_signs_orig: &mut [bool],
-//         output: &mut [Output],
-//     ) {
-//         let mut cur_seeds = cur_seeds_orig;
-//         let mut next_seeds = next_seeds_orig;
-//         let mut cur_signs = cur_signs_orig;
-//         let mut next_signs = next_signs_orig;
-//         cur_seeds[0] = self.root;
-//         cur_signs[0] = self.root_bit;
-//         for depth in 0..self.input_bits {
-//             double_prg_many(
-//                 &cur_seeds[..1 << depth],
-//                 &DOUBLE_PRG_CHILDREN,
-//                 &mut next_seeds[..2 << depth],
-//             );
-//             let mut cur_cw = self.cws[depth].node;
-//             let (cw_t_l, cw_t_r) = cur_cw.pop_first_two_bits();
-//             next_seeds[..2 << depth]
-//                 .chunks_exact_mut(2)
-//                 .zip(next_signs[..2 << depth].chunks_exact_mut(2))
-//                 .zip(cur_signs[..1 << depth].iter().copied())
-//                 .for_each(|((seeds, signs), cur_sign)| {
-//                     let mut seed_l = seeds[0];
-//                     let mut seed_r = seeds[1];
-//                     let (mut t_l, _) = seed_l.pop_first_two_bits();
-//                     let (mut t_r, _) = seed_r.pop_first_two_bits();
-//                     if cur_sign {
-//                         seed_l ^= &cur_cw;
-//                         seed_r ^= &cur_cw;
-//                         t_l ^= cw_t_l;
-//                         t_r ^= cw_t_r;
-//                     }
-//                     seeds[0] = seed_l;
-//                     seeds[1] = seed_r;
-//                     signs[0] = t_l;
-//                     signs[1] = t_r;
-//                 });
-//             (cur_seeds, next_seeds) = (next_seeds, cur_seeds);
-//             (cur_signs, next_signs) = (next_signs, cur_signs);
-//         }
-//         let last_cw = self.last_cw;
-//         let root_bit = self.root_bit;
-//         if root_bit {
-//             cur_seeds
-//                 .iter()
-//                 .zip(cur_signs.iter())
-//                 .zip(output.iter_mut())
-//                 .for_each(move |((s, t), o)| {
-//                     let my_last_cw = Output::from(*s);
-//                     *o += if *t {
-//                         (my_last_cw + last_cw).neg()
-//                     } else {
-//                         (my_last_cw).neg()
-//                     };
-//                 });
-//         } else {
-//             cur_seeds
-//                 .iter()
-//                 .zip(cur_signs.iter())
-//                 .zip(output.iter_mut())
-//                 .for_each(move |((s, t), o)| {
-//                     let my_last_cw = Output::from(*s);
-//                     *o += if *t { my_last_cw + last_cw } else { my_last_cw };
-//                 });
-//         }
-//     }
-//     pub fn eval_all(&self) -> Vec<Output> {
-//         let mut output = vec![Output::default(); 1 << self.input_bits];
-//         let mut session = LvlDpfDmpfSession::get_session(1, self.input_bits);
-//         self.eval_all_xor_output_with_session(&mut output, &mut session);
-//         output
-//     }
+    //     pub fn eval_all_xor_output_with_session(
+    //         &self,
+    //         output: &mut [Output],
+    //         session: &mut LvlDpfDmpfSession,
+    //     ) {
+    //         let LvlDpfDmpfSession {
+    //             cur_seeds,
+    //             next_seeds,
+    //             cur_signs,
+    //             next_signs,
+    //         } = session;
+    //         self.eval_all_with_cache_xor_output(cur_seeds, next_seeds, cur_signs, next_signs, output)
+    //     }
+    //     pub fn eval_all_with_cache_xor_output<'a>(
+    //         &self,
+    //         cur_seeds_orig: &'a mut [Node],
+    //         next_seeds_orig: &mut [Node],
+    //         cur_signs_orig: &'a mut [bool],
+    //         next_signs_orig: &mut [bool],
+    //         output: &mut [Output],
+    //     ) {
+    //         let mut cur_seeds = cur_seeds_orig;
+    //         let mut next_seeds = next_seeds_orig;
+    //         let mut cur_signs = cur_signs_orig;
+    //         let mut next_signs = next_signs_orig;
+    //         cur_seeds[0] = self.root;
+    //         cur_signs[0] = self.root_bit;
+    //         for depth in 0..self.input_bits {
+    //             double_prg_many(
+    //                 &cur_seeds[..1 << depth],
+    //                 &DOUBLE_PRG_CHILDREN,
+    //                 &mut next_seeds[..2 << depth],
+    //             );
+    //             let mut cur_cw = self.cws[depth].node;
+    //             let (cw_t_l, cw_t_r) = cur_cw.pop_first_two_bits();
+    //             next_seeds[..2 << depth]
+    //                 .chunks_exact_mut(2)
+    //                 .zip(next_signs[..2 << depth].chunks_exact_mut(2))
+    //                 .zip(cur_signs[..1 << depth].iter().copied())
+    //                 .for_each(|((seeds, signs), cur_sign)| {
+    //                     let mut seed_l = seeds[0];
+    //                     let mut seed_r = seeds[1];
+    //                     let (mut t_l, _) = seed_l.pop_first_two_bits();
+    //                     let (mut t_r, _) = seed_r.pop_first_two_bits();
+    //                     if cur_sign {
+    //                         seed_l ^= &cur_cw;
+    //                         seed_r ^= &cur_cw;
+    //                         t_l ^= cw_t_l;
+    //                         t_r ^= cw_t_r;
+    //                     }
+    //                     seeds[0] = seed_l;
+    //                     seeds[1] = seed_r;
+    //                     signs[0] = t_l;
+    //                     signs[1] = t_r;
+    //                 });
+    //             (cur_seeds, next_seeds) = (next_seeds, cur_seeds);
+    //             (cur_signs, next_signs) = (next_signs, cur_signs);
+    //         }
+    //         let last_cw = self.last_cw;
+    //         let root_bit = self.root_bit;
+    //         if root_bit {
+    //             cur_seeds
+    //                 .iter()
+    //                 .zip(cur_signs.iter())
+    //                 .zip(output.iter_mut())
+    //                 .for_each(move |((s, t), o)| {
+    //                     let my_last_cw = Output::from(*s);
+    //                     *o += if *t {
+    //                         (my_last_cw + last_cw).neg()
+    //                     } else {
+    //                         (my_last_cw).neg()
+    //                     };
+    //                 });
+    //         } else {
+    //             cur_seeds
+    //                 .iter()
+    //                 .zip(cur_signs.iter())
+    //                 .zip(output.iter_mut())
+    //                 .for_each(move |((s, t), o)| {
+    //                     let my_last_cw = Output::from(*s);
+    //                     *o += if *t { my_last_cw + last_cw } else { my_last_cw };
+    //                 });
+    //         }
+    //     }
+    //     pub fn eval_all(&self) -> Vec<Output> {
+    //         let mut output = vec![Output::default(); 1 << self.input_bits];
+    //         let mut session = LvlDpfDmpfSession::get_session(1, self.input_bits);
+    //         self.eval_all_xor_output_with_session(&mut output, &mut session);
+    //         output
+    //     }
 }
 // pub fn int_to_bits(mut v: usize, width: usize) -> Vec<bool> {
 //     let mut output = vec![false; width];
