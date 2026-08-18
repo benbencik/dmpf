@@ -100,7 +100,7 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
     }
 
     // one single-point DPF, evaluated for all message shares
-    fn eval_point(&mut self, k: usize, input: &u128, output: &mut [Output]) {
+    fn eval_dpf(&mut self, k: usize, input: &u128, output: &mut [Output]) {
         let n = self.messages_count;
         let start = k * self.num_messages;
 
@@ -116,7 +116,7 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
                 let seeds = double_prg(&s, &DOUBLE_PRG_CHILDREN);
                 let mut new_s = seeds[path_bit as usize];
                 let (mut new_t, _) = new_s.pop_first_two_bits();
-                
+
                 // TODO: make this branch less
                 if t {
                     let mut cw = self.cws[k][level * self.num_messages + i].node;
@@ -142,10 +142,10 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
     }
 
     // outer loop: runs K single point DPFs
-    pub fn eval_all(&mut self, input: &u128) -> Vec<Output> {
+    pub fn eval_dmpf(&mut self, input: &u128) -> Vec<Output> {
         let mut output = vec![Output::default(); self.messages_count];
         for k in 0..self.num_points {
-            self.eval_point(k, input, &mut output);
+            self.eval_dpf(k, input, &mut output);
         }
         output
     }
@@ -335,6 +335,94 @@ impl<Output: DpfOutput> DpfKey<Output> {
         }
         if self.root_bit {
             *output = output.neg()
+        }
+    }
+}
+
+#[cfg(test)]
+mod db_tests {
+    use super::*;
+    // for now use field from this project migh need to change later
+    use crate::{SmallFieldContainer, field::PrimeField64x2};
+    use crate::OmrDmpf;
+    use rand::{thread_rng, RngCore};
+
+    const INPUT_BITS: usize = 128;
+    const K: usize = 5;
+
+    fn rand_point(rng: &mut impl RngCore) -> u128 {
+        let lo = rng.next_u64() as u128;
+        let hi = rng.next_u64() as u128;
+        lo | (hi << 64)
+    }
+
+    // sender picks K random (index, value) points per message,
+    // and sends keys to both servers
+    fn populate_db(n: usize) -> (
+        LvlDpfDmpfDb<PrimeField64x2>,
+        LvlDpfDmpfDb<PrimeField64x2>,
+        Vec<Vec<(u128, PrimeField64x2)>>,
+    ) {
+        let mut rng = thread_rng();
+        let dmpf = LvlDpfDmpf::new();
+
+        let mut db0 = LvlDpfDmpfDb::new(INPUT_BITS, K, n);
+        let mut db1 = LvlDpfDmpfDb::new(INPUT_BITS, K, n);
+        let mut messages = Vec::with_capacity(n);
+
+        for _ in 0..n {
+            let points: Vec<(u128, PrimeField64x2)> = (0..K)
+                .map(|_| (rand_point(&mut rng), PrimeField64x2::random(&mut rng)))
+                .collect();
+
+            let (key0, key1) = dmpf
+                .try_gen(INPUT_BITS, &points, &mut rng)
+                .expect("try_gen failed");
+            db0.insert(key0);
+            db1.insert(key1);
+            messages.push(points);
+        }
+        (db0, db1, messages)
+    }
+
+    #[test]
+    fn test_inserted_points() {
+        for n in [10, 15, 20] {
+            let (mut db0, mut db1, messages) = populate_db(n);
+            for (i, points) in messages.iter().enumerate() {
+                for &(idx, expected) in points {
+                    let out0 = db0.eval_dmpf(&idx);
+                    let out1 = db1.eval_dmpf(&idx);
+                    assert_eq!(out0[i] + out1[i], expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_not_inseted_pointsc() {
+        let n = 25;
+        let (mut db0, mut db1, messages) = populate_db(n);
+
+        let mut rng = thread_rng();
+        // pick 10 random points that are not in any message
+        for _ in 0..10 {
+            let mut not_message: u128 = 0;
+            while not_message == 0 {
+                let rand = rand_point(&mut rng);
+                let is_used = messages
+                    .iter()
+                    .any(|points| points.iter().any(|&(idx, _)| idx == rand));
+                if !is_used {
+                    not_message = rand;
+                }
+            }
+
+            let out0 = db0.eval_dmpf(&not_message);
+            let out1 = db1.eval_dmpf(&not_message);
+            for i in 0..n {
+                assert_eq!(out0[i] + out1[i], PrimeField64x2::zero());
+            }
         }
     }
 }
