@@ -343,8 +343,8 @@ impl<Output: DpfOutput> DpfKey<Output> {
 mod db_tests {
     use super::*;
     // for now use field from this project migh need to change later
-    use crate::{SmallFieldContainer, field::PrimeField64x2};
     use crate::OmrDmpf;
+    use crate::{field::PrimeField64x2, SmallFieldContainer};
     use rand::{thread_rng, RngCore};
 
     const INPUT_BITS: usize = 128;
@@ -358,7 +358,9 @@ mod db_tests {
 
     // sender picks K random (index, value) points per message,
     // and sends keys to both servers
-    fn populate_db(n: usize) -> (
+    fn populate_db(
+        n: usize,
+    ) -> (
         LvlDpfDmpfDb<PrimeField64x2>,
         LvlDpfDmpfDb<PrimeField64x2>,
         Vec<Vec<(u128, PrimeField64x2)>>,
