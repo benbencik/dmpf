@@ -61,16 +61,16 @@ fn random_db<R: RngCore>(
 fn bench_eval_dmpf(c: &mut Criterion) {
     let mut rng = thread_rng();
     let mut group = c.benchmark_group("lvl_dmpf_eval");
-    
+
     for &logn in [10, 12, 14, 16, 18].iter() {
         let n = 1 << logn;
-        
-        let mut db = random_db(INPUT_BITS, K, n, &mut rng);
+
+        let db = random_db(INPUT_BITS, K, n, &mut rng);
         let input = ((rng.next_u64() as u128) << 64) | rng.next_u64() as u128;
-        
+
         group.throughput(criterion::Throughput::Elements(n as u64));
         group.bench_with_input(BenchmarkId::new("logn", logn), &n, |b, _| {
-            b.iter(|| db.eval_dmpf(&input));
+            b.iter(|| db.eval_dmpf_par(&input));
         });
     }
     group.finish();

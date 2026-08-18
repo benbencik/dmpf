@@ -34,6 +34,7 @@ aes-prng = {workspace = true}
 rand_chacha = {workspace = true}
 itertools = {workspace = true}
 fpe = {workspace = true}
+rayon = "1.12.0"
 
 # rb-okvs = {workspace = true}
 

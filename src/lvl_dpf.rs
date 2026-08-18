@@ -9,6 +9,7 @@ use crate::prg::DOUBLE_PRG_CHILDREN;
 use crate::utils::Node;
 use crate::DmpfSession;
 use crate::DpfOutput;
+use rayon::prelude::*;
 
 // TODO: consider correction words bundled with correction bits
 #[derive(Clone, Copy)]
@@ -58,8 +59,6 @@ pub struct LvlDpfDmpfDb<Output> {
     init_correction_bits: Vec<bool>, // len K*N, index [k*N + n] (this is also server index)
     cws: Vec<Vec<CorrectionWord>>,   // len K, each len input_bits*N, index [k][level*N + n]
     last_cw: Vec<Output>,            // len K*N, index [k*N + n]
-    cur_seeds: Vec<Node>,            // intermediate seeds (stored to prevent realocation)
-    cur_correction_bits: Vec<bool>,  // intermediate control bits (stored to prevent realocation)
 }
 
 impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
@@ -79,8 +78,6 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
                 num_points
             ],
             last_cw: vec![Output::default(); num_points * num_messages],
-            cur_seeds: vec![Node::default(); num_messages], // going to be overwritten
-            cur_correction_bits: vec![false; num_messages], // going to be overwritten
         }
     }
 
@@ -109,8 +106,6 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
             init_correction_bits,
             cws,
             last_cw,
-            cur_seeds: vec![Node::default(); num_messages],
-            cur_correction_bits: vec![false; num_messages],
         }
     }
 
@@ -130,22 +125,26 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
     }
 
     // one single-point DPF, evaluated for all message shares
-    fn eval_dpf(&mut self, k: usize, input: &u128, output: &mut [Output]) {
+    fn eval_dpf(
+        &self,
+        k: usize,
+        input: &u128,
+        cur_seeds: &mut [Node],
+        cur_correction_bits: &mut [bool],
+        output: &mut [Output],
+    ) {
         let n = self.messages_count;
         let start = k * self.num_messages;
 
-        self.cur_seeds[..n].copy_from_slice(&self.init_seeds[start..start + n]);
-        self.cur_correction_bits[..n].copy_from_slice(&self.init_correction_bits[start..start + n]);
+        cur_seeds[..n].copy_from_slice(&self.init_seeds[start..start + n]);
+        cur_correction_bits[..n].copy_from_slice(&self.init_correction_bits[start..start + n]);
         let cur_cw = &self.cws[k];
 
         for level in 0..self.input_bits {
             let path_bit = get_bit(*input, level);
-            // TODO: add iter here compiler might optimize better
             for i in 0..n {
-                let s = self.cur_seeds[i];
-                let t = self.cur_correction_bits[i];
-                // TODO: we are expanding two seeds but use only one
-                // TODO: also check how we are using the AES keys
+                let s = cur_seeds[i];
+                let t = cur_correction_bits[i];
                 let seeds = double_prg(&s, &DOUBLE_PRG_CHILDREN);
                 let mut new_s = seeds[path_bit as usize];
                 let (mut new_t, _) = new_s.pop_first_two_bits();
@@ -159,14 +158,14 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
                 let selected_bit = (left_bit & !path_bit) ^ (right_bit & path_bit);
                 new_t ^= selected_bit & t;
 
-                self.cur_seeds[i] = new_s;
-                self.cur_correction_bits[i] = new_t;
+                cur_seeds[i] = new_s;
+                cur_correction_bits[i] = new_t;
             }
         }
 
         for i in 0..n {
-            let mut val = Output::from(self.cur_seeds[i]); // conver step of the DPF
-            if self.cur_correction_bits[i] {
+            let mut val = Output::from(cur_seeds[i]); // convert step of the DPF
+            if cur_correction_bits[i] {
                 val += self.last_cw[k * self.num_messages + i];
             }
             if self.init_correction_bits[k * self.num_messages + i] {
@@ -176,13 +175,58 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
         }
     }
 
-    // outer loop: runs K single point DPFs
-    pub fn eval_dmpf(&mut self, input: &u128) -> Vec<Output> {
-        let mut output = vec![Output::default(); self.messages_count];
+    // outer loop, sequential: runs K single point DPFs
+    pub fn eval_dmpf_seq(&self, input: &u128) -> Vec<Output> {
+        let n = self.messages_count;
+
+        // reuse across all K runs
+        let mut cur_seeds = vec![Node::default(); n];
+        let mut cur_correction_bits = vec![false; n];
+
+        let mut output = vec![Output::default(); n];
         for k in 0..self.num_points {
-            self.eval_dpf(k, input, &mut output);
+            self.eval_dpf(
+                k,
+                input,
+                &mut cur_seeds,
+                &mut cur_correction_bits,
+                &mut output,
+            );
         }
         output
+    }
+
+    // outer loop, parallel: runs K single point DPFs
+    pub fn eval_dmpf_par(&self, input: &u128) -> Vec<Output>
+    where
+        Output: Send + Sync,
+    {
+        let n = self.messages_count;
+        // TODO: K is small this might now be optimal for paralelism
+        (0..self.num_points)
+            .into_par_iter()
+            .map(|k| {
+                let mut cur_seeds = vec![Node::default(); n];
+                let mut cur_correction_bits = vec![false; n];
+                let mut partial = vec![Output::default(); n];
+                self.eval_dpf(
+                    k,
+                    input,
+                    &mut cur_seeds,
+                    &mut cur_correction_bits,
+                    &mut partial,
+                );
+                partial
+            })
+            .reduce(
+                || vec![Output::default(); n],
+                |mut acc, partial| {
+                    for i in 0..n {
+                        acc[i] += partial[i];
+                    }
+                    acc
+                },
+            )
     }
 }
 
@@ -425,12 +469,15 @@ mod db_tests {
     #[test]
     fn test_inserted_points() {
         for n in [10, 15, 20] {
-            let (mut db0, mut db1, messages) = populate_db(n);
+            let (db0, db1, messages) = populate_db(n);
             for (i, points) in messages.iter().enumerate() {
                 for &(idx, expected) in points {
-                    let out0 = db0.eval_dmpf(&idx);
-                    let out1 = db1.eval_dmpf(&idx);
+                    let out0 = db0.eval_dmpf_seq(&idx);
+                    let out1 = db1.eval_dmpf_seq(&idx);
+                    let out0_par = db0.eval_dmpf_par(&idx);
+                    let out1_par = db1.eval_dmpf_par(&idx);
                     assert_eq!(out0[i] + out1[i], expected);
+                    assert_eq!(out0_par[i] + out1_par[i], expected);
                 }
             }
         }
@@ -439,7 +486,7 @@ mod db_tests {
     #[test]
     fn test_not_inseted_pointsc() {
         let n = 25;
-        let (mut db0, mut db1, messages) = populate_db(n);
+        let (db0, db1, messages) = populate_db(n);
 
         let mut rng = thread_rng();
         // pick 10 random points that are not in any message
@@ -455,10 +502,13 @@ mod db_tests {
                 }
             }
 
-            let out0 = db0.eval_dmpf(&not_message);
-            let out1 = db1.eval_dmpf(&not_message);
+            let out0 = db0.eval_dmpf_seq(&not_message);
+            let out1 = db1.eval_dmpf_seq(&not_message);
+            let out0_par = db0.eval_dmpf_par(&not_message);
+            let out1_par = db1.eval_dmpf_par(&not_message);
             for i in 0..n {
                 assert_eq!(out0[i] + out1[i], PrimeField64x2::zero());
+                assert_eq!(out0_par[i] + out1_par[i], PrimeField64x2::zero());
             }
         }
     }
