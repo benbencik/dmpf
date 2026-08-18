@@ -8,8 +8,8 @@ use std::ops::Sub;
 
 // pub mod big_state;
 mod dpf;
-mod lvl_dpf;
 pub mod field;
+mod lvl_dpf;
 pub mod prg;
 mod trie;
 mod utils;
@@ -30,8 +30,8 @@ pub const BITS_IN_BYTE: usize = 8;
 pub const BITS_OF_SECURITY: usize = 128;
 pub const BYTES_OF_SECURITY: usize = BITS_OF_SECURITY / BITS_IN_BYTE;
 pub use dpf::DpfDmpf;
-pub use lvl_dpf::LvlDpfDmpf;
 pub use field::{PrimeField64, PrimeField64x2, RadixTwoFftFriendFieldElement};
+pub use lvl_dpf::LvlDpfDmpf;
 pub use rb_okvs::{g, EpsilonPercent, LogN};
 pub use utils::Node512;
 pub use utils::SmallFieldContainer;
@@ -66,6 +66,19 @@ where
     Self: Sized,
 {
     type Key: DmpfKey<Output>;
+    fn try_gen<R: CryptoRng + RngCore>(
+        &self,
+        input_length: usize,
+        inputs: &[(u128, Output)],
+        rng: &mut R,
+    ) -> Option<(Self::Key, Self::Key)>;
+}
+
+pub trait OmrDmpf<Output: DpfOutput>
+where
+    Self: Sized,
+{
+    type Key: OmrDmpfKey<Output>;
     fn try_gen<R: CryptoRng + RngCore>(
         &self,
         input_length: usize,
@@ -110,4 +123,21 @@ pub(crate) fn random_u128<R: CryptoRng + RngCore>(rng: &mut R) -> u128 {
 }
 pub(crate) fn random_u126<R: CryptoRng + RngCore>(rng: &mut R) -> u128 {
     random_u128(rng) & (!3u128)
+}
+
+pub trait OmrDmpfKey<Output>
+where
+    Self: Sized,
+    Output: DpfOutput,
+{
+    type Session: DmpfSession;
+    fn point_count(&self) -> usize;
+    fn input_length(&self) -> usize;
+    fn eval(&self, input: &u128, output: &mut Output) {
+        self.eval_with_session(input, output, &mut self.make_session())
+    }
+    fn eval_with_session(&self, input: &u128, output: &mut Output, session: &mut Self::Session);
+    fn make_session(&self) -> Self::Session {
+        Self::Session::get_session(self.point_count(), self.input_length())
+    }
 }
