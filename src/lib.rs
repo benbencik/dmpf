@@ -8,6 +8,7 @@ use std::ops::Sub;
 
 pub mod big_state;
 mod dpf;
+mod lvl_dpf;
 pub mod field;
 pub mod prg;
 mod trie;
