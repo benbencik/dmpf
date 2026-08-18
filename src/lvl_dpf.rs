@@ -1,5 +1,3 @@
-use std::process::Output;
-
 use crate::OmrDmpf;
 use crate::OmrDmpfKey;
 // use super::BITS_OF_SECURITY;
@@ -33,8 +31,8 @@ impl<Output: DpfOutput> OmrDmpf<Output> for LvlDpfDmpf {
         let mut first_keys = Vec::with_capacity(inputs.len());
         let mut second_keys = Vec::with_capacity(inputs.len());
         inputs.iter().for_each(|(k, v)| {
-            let roots = (Node::random(&mut rng), Node::random(&mut rng));
-            let (f, s) = DpfKey::gen(&roots, k, input_length, v);
+            let init_seeds = (Node::random(&mut rng), Node::random(&mut rng));
+            let (f, s) = DpfKey::gen(&init_seeds, k, input_length, v);
             first_keys.push(f);
             second_keys.push(s);
         });
@@ -51,16 +49,16 @@ impl<Output: DpfOutput> OmrDmpf<Output> for LvlDpfDmpf {
 
 // server database of all message shares
 pub struct LvlDpfDmpfDb<Output> {
-    input_bits: usize,              // tree depth
-    num_points: usize,              // K points of the DMPF
-    num_messages: usize,            // N max number of messages
-    messages_count: usize,          // current number of messages <= N
-    roots: Vec<Node>,               // len K*N, index [k*N + n]
-    root_bits: Vec<bool>,           // len K*N, index [k*N + n]
-    cws: Vec<Vec<CorrectionWord>>,  // len K, each len input_bits*N, index [k][level*N + n]
-    last_cw: Vec<Output>,           // len K*N, index [k*N + n]
-    cur_seeds: Vec<Node>,           // intermediate seeds for current level
-    current_control_bit: Vec<bool>, // intermediate control bits for current level
+    input_bits: usize,               // tree depth
+    num_points: usize,               // K points of the DMPF
+    num_messages: usize,             // N max number of messages
+    messages_count: usize,           // current number of messages <= N
+    init_seeds: Vec<Node>,           // len K*N, index [k*N + n]
+    init_correction_bits: Vec<bool>, // len K*N, index [k*N + n]
+    cws: Vec<Vec<CorrectionWord>>,   // len K, each len input_bits*N, index [k][level*N + n]
+    last_cw: Vec<Output>,            // len K*N, index [k*N + n]
+    cur_seeds: Vec<Node>,            // intermediate seeds (stored to prevent realocation)
+    cur_correction_bits: Vec<bool>,  // intermediate control bits (stored to prevent realocation)
 }
 
 impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
@@ -70,8 +68,8 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
             num_points,
             num_messages,
             messages_count: 0,
-            roots: vec![Node::default(); num_points * num_messages],
-            root_bits: vec![false; num_points * num_messages],
+            init_seeds: vec![Node::default(); num_points * num_messages],
+            init_correction_bits: vec![false; num_points * num_messages],
             cws: vec![
                 vec![
                     CorrectionWord::new(Node::default(), false, false);
@@ -89,8 +87,9 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
         assert!(self.messages_count < self.num_messages, "db full capacity");
         for k in 0..self.num_points {
             let dpf_key = &key.dpf_keys[k];
-            self.roots[k * self.num_messages + self.messages_count] = dpf_key.root;
-            self.root_bits[k * self.num_messages + self.messages_count] = dpf_key.root_bit;
+            self.init_seeds[k * self.num_messages + self.messages_count] = dpf_key.init_seed;
+            self.init_correction_bits[k * self.num_messages + self.messages_count] =
+                dpf_key.init_correction_bit;
             self.last_cw[k * self.num_messages + self.messages_count] = dpf_key.last_cw;
             for level in 0..self.input_bits {
                 self.cws[k][level * self.num_messages + self.messages_count] = dpf_key.cws[level];
@@ -104,15 +103,15 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
         let n = self.messages_count;
         let start = k * self.num_messages;
 
-        self.cur_seeds[..n].copy_from_slice(&self.roots[start..start + n]);
-        self.current_control_bit[..n].copy_from_slice(&self.root_bits[start..start + n]);
+        self.cur_seeds[..n].copy_from_slice(&self.init_seeds[start..start + n]);
+        self.cur_correction_bits[..n].copy_from_slice(&self.init_correction_bits[start..start + n]);
 
         for level in 0..self.input_bits {
             let path_bit = get_bit(*input, level);
             // TODO: add iter here compiler might optimize better
             for i in 0..n {
                 let s = self.cur_seeds[i];
-                let t = self.current_control_bit[i];
+                let t = self.cur_correction_bits[i];
                 let seeds = double_prg(&s, &DOUBLE_PRG_CHILDREN);
                 let mut new_s = seeds[path_bit as usize];
                 let (mut new_t, _) = new_s.pop_first_two_bits();
@@ -125,16 +124,16 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
                     new_t ^= (left_bit & !path_bit) ^ (right_bit & path_bit);
                 }
                 self.cur_seeds[i] = new_s;
-                self.current_control_bit[i] = new_t;
+                self.cur_correction_bits[i] = new_t;
             }
         }
 
         for i in 0..n {
             let mut val = Output::from(self.cur_seeds[i]);
-            if self.current_control_bit[i] {
+            if self.cur_correction_bits[i] {
                 val += self.last_cw[k * self.num_messages + i];
             }
-            if self.root_bits[k * self.num_messages + i] {
+            if self.init_correction_bits[k * self.num_messages + i] {
                 val = val.neg();
             }
             output[i] += val; // accumulate the share of the output
@@ -204,14 +203,14 @@ impl<Output: DpfOutput> OmrDmpfKey<Output> for LvlDpfDmpfKey<Output> {
     }
 }
 pub struct DpfKey<Output> {
-    root: Node,
-    root_bit: bool,
+    init_seed: Node,
+    init_correction_bit: bool,
     cws: Vec<CorrectionWord>,
     last_cw: Output,
     input_bits: usize,
 }
 impl CorrectionWord {
-    fn new(mut node: Node, left_bit: bool, right_bit: bool) -> Self {
+    pub fn new(mut node: Node, left_bit: bool, right_bit: bool) -> Self {
         node.push_first_two_bits(left_bit, right_bit);
         Self { node }
     }
@@ -251,15 +250,15 @@ fn get_bit(v: u128, bit_idx: usize) -> bool {
 }
 impl<Output: DpfOutput> DpfKey<Output> {
     pub fn gen(
-        roots: &(Node, Node),
+        init_seeds: &(Node, Node),
         alpha: &u128,
         input_len: usize,
         beta: &Output,
     ) -> (DpfKey<Output>, DpfKey<Output>) {
         let mut t_0 = false;
         let mut t_1 = true;
-        let mut seed_0 = roots.0;
-        let mut seed_1 = roots.1;
+        let mut seed_0 = init_seeds.0;
+        let mut seed_1 = init_seeds.1;
         let mut cws = Vec::with_capacity(input_len);
         for i in 0..input_len {
             let [mut seeds_l_0, mut seeds_r_0] = double_prg(&seed_0, &DOUBLE_PRG_CHILDREN);
@@ -297,15 +296,15 @@ impl<Output: DpfOutput> DpfKey<Output> {
             last_cw = last_cw.neg();
         }
         let first_key = DpfKey {
-            root: roots.0,
-            root_bit: false,
+            init_seed: init_seeds.0,
+            init_correction_bit: false,
             cws: cws.clone(),
             last_cw: last_cw.into(),
             input_bits: input_len,
         };
         let second_key = DpfKey {
-            root: roots.1,
-            root_bit: true,
+            init_seed: init_seeds.1,
+            init_correction_bit: true,
             cws,
             last_cw: last_cw.into(),
             input_bits: input_len,
@@ -314,8 +313,8 @@ impl<Output: DpfOutput> DpfKey<Output> {
     }
 
     pub fn eval(&self, x: &u128, output: &mut Output) {
-        let mut t = self.root_bit;
-        let mut s = self.root;
+        let mut t = self.init_correction_bit;
+        let mut s = self.init_seed;
         for (idx, cw) in self.cws.iter().enumerate() {
             let path_bit = get_bit(*x, idx);
             let seeds = double_prg(&s, &DOUBLE_PRG_CHILDREN);
@@ -333,7 +332,7 @@ impl<Output: DpfOutput> DpfKey<Output> {
         if t {
             *output += self.last_cw;
         }
-        if self.root_bit {
+        if self.init_correction_bit {
             *output = output.neg()
         }
     }
@@ -454,8 +453,8 @@ mod db_tests {
 //         let mut next_seeds = next_seeds_orig;
 //         let mut cur_signs = cur_signs_orig;
 //         let mut next_signs = next_signs_orig;
-//         cur_seeds[0] = self.root;
-//         cur_signs[0] = self.root_bit;
+//         cur_seeds[0] = self.init_seed;
+//         cur_signs[0] = self.init_correction_bit;
 //         for depth in 0..self.input_bits {
 //             double_prg_many(
 //                 &cur_seeds[..1 << depth],
@@ -488,8 +487,8 @@ mod db_tests {
 //             (cur_signs, next_signs) = (next_signs, cur_signs);
 //         }
 //         let last_cw = self.last_cw;
-//         let root_bit = self.root_bit;
-//         if root_bit {
+//         let init_correction_bit = self.init_correction_bit;
+//         if init_correction_bit {
 //             cur_seeds
 //                 .iter()
 //                 .zip(cur_signs.iter())
@@ -544,12 +543,12 @@ mod db_tests {
 //         let mut rng = thread_rng();
 //         let root_0 = Node::random(&mut rng);
 //         let root_1 = Node::random(&mut rng);
-//         let roots = (root_0, root_1);
+//         let init_seeds = (root_0, root_1);
 //         let point = (rng.next_u64() & ((1 << DEPTH) - 1)) as u128;
 //         // let alpha_idx = [point << (128 - DEPTH)].into();
 //         let alpha_idx = point << (128 - DEPTH);
 //         let beta = PrimeField64x2::random(&mut rng);
-//         let (k_0, k_1) = DpfKey::gen(&roots, &alpha_idx, DEPTH, &beta);
+//         let (k_0, k_1) = DpfKey::gen(&init_seeds, &alpha_idx, DEPTH, &beta);
 //         let eval_all_0 = k_0.eval_all();
 //         let eval_all_1 = k_1.eval_all();
 //         for i in 0usize..1 << DEPTH {
