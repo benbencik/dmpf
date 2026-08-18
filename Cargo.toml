@@ -45,6 +45,10 @@ name = "dpf"
 harness = false
 
 [[bench]]
+name = "lvl_dpf"
+harness = false
+
+[[bench]]
 name = "batch_code"
 harness = false
 

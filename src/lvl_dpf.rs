@@ -10,6 +10,7 @@ use crate::utils::Node;
 use crate::DmpfSession;
 use crate::DpfOutput;
 
+// TODO: consider correction words bundled with correction bits
 #[derive(Clone, Copy)]
 pub struct CorrectionWord {
     node: Node,
@@ -54,7 +55,7 @@ pub struct LvlDpfDmpfDb<Output> {
     num_messages: usize,             // N max number of messages
     messages_count: usize,           // current number of messages <= N
     init_seeds: Vec<Node>,           // len K*N, index [k*N + n]
-    init_correction_bits: Vec<bool>, // len K*N, index [k*N + n]
+    init_correction_bits: Vec<bool>, // len K*N, index [k*N + n] (this is also server index)
     cws: Vec<Vec<CorrectionWord>>,   // len K, each len input_bits*N, index [k][level*N + n]
     last_cw: Vec<Output>,            // len K*N, index [k*N + n]
     cur_seeds: Vec<Node>,            // intermediate seeds (stored to prevent realocation)
@@ -78,8 +79,38 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
                 num_points
             ],
             last_cw: vec![Output::default(); num_points * num_messages],
+            cur_seeds: vec![Node::default(); num_messages], // going to be overwritten
+            cur_correction_bits: vec![false; num_messages], // going to be overwritten
+        }
+    }
+
+    // builds a db directly from values (used for benchmarks)
+    pub fn new_from_values(
+        input_bits: usize,
+        num_points: usize,
+        num_messages: usize,
+        init_seeds: Vec<Node>,
+        init_correction_bits: Vec<bool>,
+        cws: Vec<Vec<CorrectionWord>>,
+        last_cw: Vec<Output>,
+    ) -> Self {
+        assert_eq!(init_seeds.len(), num_points * num_messages);
+        assert_eq!(init_correction_bits.len(), num_points * num_messages);
+        assert_eq!(cws.len(), num_points);
+        assert!(cws.iter().all(|i| i.len() == input_bits * num_messages));
+        assert_eq!(last_cw.len(), num_points * num_messages);
+
+        Self {
+            input_bits,
+            num_points,
+            num_messages,
+            messages_count: num_messages,
+            init_seeds,
+            init_correction_bits,
+            cws,
+            last_cw,
             cur_seeds: vec![Node::default(); num_messages],
-            current_control_bit: vec![false; num_messages],
+            cur_correction_bits: vec![false; num_messages],
         }
     }
 
@@ -118,6 +149,7 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
 
                 // TODO: make this branch less
                 if t {
+                    // TODO: k does not change, extract self.cws[k] outside of the loop
                     let mut cw = self.cws[k][level * self.num_messages + i].node;
                     let (left_bit, right_bit) = cw.pop_first_two_bits();
                     new_s ^= &cw;
@@ -129,7 +161,7 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
         }
 
         for i in 0..n {
-            let mut val = Output::from(self.cur_seeds[i]);
+            let mut val = Output::from(self.cur_seeds[i]); // conver step of the DPF
             if self.cur_correction_bits[i] {
                 val += self.last_cw[k * self.num_messages + i];
             }

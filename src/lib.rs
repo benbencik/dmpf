@@ -20,6 +20,8 @@ pub mod okvs;
 pub mod rb_okvs;
 
 pub use dpf::DpfKey;
+pub use lvl_dpf::CorrectionWord;
+pub use lvl_dpf::LvlDpfDmpfDb;
 pub use lvl_dpf::LvlDpfDmpfKey;
 use rand::CryptoRng;
 use rand::RngCore;
