@@ -136,6 +136,7 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
 
         self.cur_seeds[..n].copy_from_slice(&self.init_seeds[start..start + n]);
         self.cur_correction_bits[..n].copy_from_slice(&self.init_correction_bits[start..start + n]);
+        let cur_cw = &self.cws[k];
 
         for level in 0..self.input_bits {
             let path_bit = get_bit(*input, level);
@@ -143,18 +144,21 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
             for i in 0..n {
                 let s = self.cur_seeds[i];
                 let t = self.cur_correction_bits[i];
+                // TODO: we are expanding two seeds but use only one
+                // TODO: also check how we are using the AES keys
                 let seeds = double_prg(&s, &DOUBLE_PRG_CHILDREN);
                 let mut new_s = seeds[path_bit as usize];
                 let (mut new_t, _) = new_s.pop_first_two_bits();
+                
+                let mut cw = cur_cw[level * self.num_messages + i].node;
+                let (left_bit, right_bit) = cw.pop_first_two_bits();
 
-                // TODO: make this branch less
-                if t {
-                    // TODO: k does not change, extract self.cws[k] outside of the loop
-                    let mut cw = self.cws[k][level * self.num_messages + i].node;
-                    let (left_bit, right_bit) = cw.pop_first_two_bits();
-                    new_s ^= &cw;
-                    new_t ^= (left_bit & !path_bit) ^ (right_bit & path_bit);
-                }
+                // correction only applied if t is 1
+                let mask = (t as u128).wrapping_neg(); // for 0 this is 0, for 1 this is all 1s
+                new_s ^= &Node::from(u128::from(cw) & mask);
+                let selected_bit = (left_bit & !path_bit) ^ (right_bit & path_bit);
+                new_t ^= selected_bit & t;
+
                 self.cur_seeds[i] = new_s;
                 self.cur_correction_bits[i] = new_t;
             }
