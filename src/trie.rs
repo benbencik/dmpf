@@ -241,6 +241,7 @@ impl BinaryTrie {
         self.words.len()
     }
 }
+#[allow(unused)]
 pub struct BinaryTrieDepthIter {
     depth: usize,
     util: Vec<u128>,

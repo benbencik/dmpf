@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, u128};
+use std::{marker::PhantomData};
 
 use crate::{
     prg::double_prg_many,
@@ -37,6 +37,7 @@ impl<const W: usize, Output: OkvsValue> Okvs<W, Output> {
     }
 }
 impl<const W: usize, Output: BinaryOkvsValue> BinaryOkvs<W, Output> {
+    #[allow(unused)]
     fn decode(&self, key: &u128) -> Output {
         match self {
             BinaryOkvs::RbOkvs(v) => v.decode(&Node::from(*key)),

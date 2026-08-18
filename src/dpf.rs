@@ -117,6 +117,7 @@ impl CorrectionWord {
         Self { node }
     }
 }
+#[allow(unused)]
 pub(crate) fn tree_and_leaf_depth(alpha_len: usize, beta_len: usize) -> (usize, usize) {
     let max_betas_in_node = BITS_OF_SECURITY / beta_len;
     let max_leaf_depth = if max_betas_in_node > 0 {
@@ -133,6 +134,7 @@ pub(crate) fn tree_and_leaf_depth(alpha_len: usize, beta_len: usize) -> (usize, 
     (tree_depth, leaf_depth)
 }
 
+#[allow(unused)]
 pub(crate) fn convert(node: &Node, bits: usize) -> BitVec {
     let mut output = BitVec::new(bits);
     convert_into(node, &mut output.as_mut());

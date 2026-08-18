@@ -1,9 +1,9 @@
-use super::BITS_OF_SECURITY;
+// use super::BITS_OF_SECURITY;
 use crate::prg::double_prg;
 use crate::prg::double_prg_many;
-use crate::prg::many_prg;
+// use crate::prg::many_prg;
 use crate::prg::DOUBLE_PRG_CHILDREN;
-use crate::utils::BitVec;
+// use crate::utils::BitVec;
 use crate::utils::Node;
 use crate::Dmpf;
 use crate::DmpfKey;
@@ -117,36 +117,36 @@ impl CorrectionWord {
         Self { node }
     }
 }
-pub(crate) fn tree_and_leaf_depth(alpha_len: usize, beta_len: usize) -> (usize, usize) {
-    let max_betas_in_node = BITS_OF_SECURITY / beta_len;
-    let max_leaf_depth = if max_betas_in_node > 0 {
-        usize::ilog2(max_betas_in_node) as usize
-    } else {
-        0
-    };
-    let tree_depth = if max_leaf_depth > alpha_len {
-        0
-    } else {
-        alpha_len - max_leaf_depth
-    };
-    let leaf_depth = alpha_len - tree_depth;
-    (tree_depth, leaf_depth)
-}
+// pub(crate) fn tree_and_leaf_depth(alpha_len: usize, beta_len: usize) -> (usize, usize) {
+//     let max_betas_in_node = BITS_OF_SECURITY / beta_len;
+//     let max_leaf_depth = if max_betas_in_node > 0 {
+//         usize::ilog2(max_betas_in_node) as usize
+//     } else {
+//         0
+//     };
+//     let tree_depth = if max_leaf_depth > alpha_len {
+//         0
+//     } else {
+//         alpha_len - max_leaf_depth
+//     };
+//     let leaf_depth = alpha_len - tree_depth;
+//     (tree_depth, leaf_depth)
+// }
 
-pub(crate) fn convert(node: &Node, bits: usize) -> BitVec {
-    let mut output = BitVec::new(bits);
-    convert_into(node, &mut output.as_mut());
-    output
-}
-pub(crate) fn convert_into(node: &Node, output: &mut [Node]) {
-    let len = output.len();
-    if len > 1 {
-        many_prg(node, 0..len as u16, output);
-    } else {
-        // We don't have to expand node
-        output[0] = *node;
-    }
-}
+// pub(crate) fn convert(node: &Node, bits: usize) -> BitVec {
+//     let mut output = BitVec::new(bits);
+//     convert_into(node, &mut output.as_mut());
+//     output
+// }
+// pub(crate) fn convert_into(node: &Node, output: &mut [Node]) {
+//     let len = output.len();
+//     if len > 1 {
+//         many_prg(node, 0..len as u16, output);
+//     } else {
+//         // We don't have to expand node
+//         output[0] = *node;
+//     }
+// }
 fn get_bit(v: u128, bit_idx: usize) -> bool {
     (v >> (127 - bit_idx)) & 1 == 1
 }
@@ -328,15 +328,15 @@ impl<Output: DpfOutput> DpfKey<Output> {
         output
     }
 }
-pub fn int_to_bits(mut v: usize, width: usize) -> Vec<bool> {
-    let mut output = vec![false; width];
-    for i in 0..width {
-        let b = v & 1 == 1;
-        v >>= 1;
-        output[width - i - 1] = b;
-    }
-    output
-}
+// pub fn int_to_bits(mut v: usize, width: usize) -> Vec<bool> {
+//     let mut output = vec![false; width];
+//     for i in 0..width {
+//         let b = v & 1 == 1;
+//         v >>= 1;
+//         output[width - i - 1] = b;
+//     }
+//     output
+// }
 #[cfg(test)]
 mod tests {
     use rand::{thread_rng, RngCore};

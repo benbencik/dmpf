@@ -6,7 +6,7 @@ use std::ops::BitXorAssign;
 use std::ops::Neg;
 use std::ops::Sub;
 
-pub mod big_state;
+// pub mod big_state;
 mod dpf;
 mod lvl_dpf;
 pub mod field;
@@ -20,6 +20,7 @@ pub mod okvs;
 pub mod rb_okvs;
 
 pub use dpf::DpfKey;
+pub use lvl_dpf::LvlDpfDmpfKey;
 use rand::CryptoRng;
 use rand::RngCore;
 use rb_okvs::OkvsValue;
@@ -29,6 +30,7 @@ pub const BITS_IN_BYTE: usize = 8;
 pub const BITS_OF_SECURITY: usize = 128;
 pub const BYTES_OF_SECURITY: usize = BITS_OF_SECURITY / BITS_IN_BYTE;
 pub use dpf::DpfDmpf;
+pub use lvl_dpf::LvlDpfDmpf;
 pub use field::{PrimeField64, PrimeField64x2, RadixTwoFftFriendFieldElement};
 pub use rb_okvs::{g, EpsilonPercent, LogN};
 pub use utils::Node512;
