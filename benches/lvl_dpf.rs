@@ -69,7 +69,10 @@ fn bench_eval_dmpf(c: &mut Criterion) {
         let input = ((rng.next_u64() as u128) << 64) | rng.next_u64() as u128;
 
         group.throughput(criterion::Throughput::Elements(n as u64));
-        group.bench_with_input(BenchmarkId::new("logn", logn), &n, |b, _| {
+        group.bench_with_input(BenchmarkId::new("seq/logn", logn), &n, |b, _| {
+            b.iter(|| db.eval_dmpf_seq(&input));
+        });
+        group.bench_with_input(BenchmarkId::new("par/logn", logn), &n, |b, _| {
             b.iter(|| db.eval_dmpf_par(&input));
         });
     }
