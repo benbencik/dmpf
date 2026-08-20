@@ -16,21 +16,21 @@ static AES: Lazy<Aes128> = Lazy::new(|| Aes128::new_from_slice(&DPF_AES_KEY).unw
 pub(crate) const DOUBLE_PRG_CHILDREN: [u8; 2] = [0, 1];
 
 pub fn double_prg(input: &Node, children: &[u8; 2]) -> [Node; 2] {
-    let mut blocks = [Block::from(*<Node as AsRef<[u8; 16]>>::as_ref(input)); 2];
+    let inp_xor = [
+        *input ^ Node::from(children[0] as u128),
+        *input ^ Node::from(children[1] as u128),
+    ];
+    let blocks = [
+        Block::from(*<Node as AsRef<[u8; 16]>>::as_ref(&inp_xor[0])),
+        Block::from(*<Node as AsRef<[u8; 16]>>::as_ref(&inp_xor[1])),
+    ];
+
     let mut enc: [aes::Block; 2] = [[0u8; 16].into(), [0u8; 16].into()];
-    
-    blocks[0][0] ^= children[0];
-    blocks[1][0] ^= children[1];
+    let _ = AES.encrypt_blocks_b2b(&blocks, &mut enc);
 
-    AES.encrypt_blocks_b2b(&blocks, &mut enc);
-    
-    enc[0][0] ^= children[0];
-    enc[1][0] ^= children[1];
-    
     let mut out: [Node; 2] = unsafe { std::mem::transmute(enc) };
-
-    out[0] ^= input;
-    out[1] ^= input;
+    out[0] ^= &inp_xor[0];
+    out[1] ^= &inp_xor[1];
     out
 }
 
