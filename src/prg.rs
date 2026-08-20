@@ -17,22 +17,23 @@ pub(crate) const DOUBLE_PRG_CHILDREN: [u8; 2] = [0, 1];
 
 pub fn double_prg(input: &Node, children: &[u8; 2]) -> [Node; 2] {
     let mut blocks = [Block::from(*<Node as AsRef<[u8; 16]>>::as_ref(input)); 2];
-
     let mut enc: [aes::Block; 2] = [[0u8; 16].into(), [0u8; 16].into()];
-    let enc_ptr = unsafe { (enc.as_mut_ptr() as *mut [Node; 2]).as_mut().unwrap() };
     
     blocks[0][0] ^= children[0];
     blocks[1][0] ^= children[1];
 
     AES.encrypt_blocks_b2b(&blocks, &mut enc);
     
-    enc_ptr[0] ^= input;
-    enc_ptr[1] ^= input;
-    
     enc[0][0] ^= children[0];
     enc[1][0] ^= children[1];
-    unsafe { std::mem::transmute(enc) }
+    
+    let mut out: [Node; 2] = unsafe { std::mem::transmute(enc) };
+
+    out[0] ^= input;
+    out[1] ^= input;
+    out
 }
+
 pub fn double_prg_many(input: &[Node], children: &[u8; 2], output: &mut [Node]) {
     const BLOCK_SIZE_INPUT: usize = 8;
     // The less interesting case
