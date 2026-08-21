@@ -5,7 +5,7 @@ use crate::{
     xor_arrays, BYTES_OF_SECURITY,
 };
 use aes::{
-    cipher::{BlockEncrypt, KeyInit},
+    cipher::{BlockCipherEncrypt, KeyInit},
     Aes128, Block,
 };
 use once_cell::sync::Lazy;

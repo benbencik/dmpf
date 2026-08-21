@@ -4,7 +4,7 @@ members = [
 #	"rb-okvs"
 ]
 [workspace.dependencies]
-aes = "0.8"
+aes = "0.9"
 rand = "0.8.5"
 aes-prng = "0.2"
 dmpf = {path = "."}
