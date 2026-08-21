@@ -2,6 +2,7 @@ use crate::OmrDmpf;
 use crate::OmrDmpfKey;
 // use super::BITS_OF_SECURITY;
 use crate::prg::double_prg;
+use crate::prg::double_prg_eval;
 // use crate::prg::double_prg_many;
 // use crate::prg::many_prg;
 use crate::prg::DOUBLE_PRG_CHILDREN;
@@ -33,6 +34,7 @@ impl<Output: DpfOutput> OmrDmpf<Output> for LvlDpfDmpf {
         let mut first_keys = Vec::with_capacity(inputs.len());
         let mut second_keys = Vec::with_capacity(inputs.len());
         inputs.iter().for_each(|(k, v)| {
+            // TODo: initial seeds are random should we enforce them to be 127bit?
             let init_seeds = (Node::random(&mut rng), Node::random(&mut rng));
             let (f, s) = DpfKey::gen(&init_seeds, k, input_length, v);
             first_keys.push(f);
@@ -142,22 +144,53 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
 
         for level in 0..self.input_bits {
             let path_bit = get_bit(*input, level);
-            for i in 0..n {
+            let ctr = path_bit as u8;
+
+            let even_n = n - (n % 2);
+            for i in (0..even_n).step_by(2) {
+                let seeds = double_prg_eval(&cur_seeds[i], &cur_seeds[i + 1], ctr);
+
+                // message i
+                let t = cur_correction_bits[i];
+                let mut new_s = seeds[0];
+                let (mut new_t, _) = new_s.pop_first_two_bits();
+                let mut cw = cur_cw[level * self.num_messages + i].node;
+                let (left_bit, right_bit) = cw.pop_first_two_bits();
+                let mask = (t as u128).wrapping_neg();
+                new_s ^= &Node::from(u128::from(cw) & mask);
+                let selected_bit = (left_bit & !path_bit) ^ (right_bit & path_bit);
+                new_t ^= selected_bit & t;
+                cur_seeds[i] = new_s;
+                cur_correction_bits[i] = new_t;
+
+                // message i + 1
+                let t = cur_correction_bits[i + 1];
+                let mut new_s = seeds[1];
+                let (mut new_t, _) = new_s.pop_first_two_bits();
+                let mut cw = cur_cw[level * self.num_messages + i + 1].node;
+                let (left_bit, right_bit) = cw.pop_first_two_bits();
+                let mask = (t as u128).wrapping_neg();
+                new_s ^= &Node::from(u128::from(cw) & mask);
+                let selected_bit = (left_bit & !path_bit) ^ (right_bit & path_bit);
+                new_t ^= selected_bit & t;
+                cur_seeds[i + 1] = new_s;
+                cur_correction_bits[i + 1] = new_t;
+            }
+
+            // end case: one leftover message when n is odd
+            if n % 2 == 1 {
+                let i = n - 1;
                 let s = cur_seeds[i];
                 let t = cur_correction_bits[i];
                 let seeds = double_prg(&s, &DOUBLE_PRG_CHILDREN);
                 let mut new_s = seeds[path_bit as usize];
                 let (mut new_t, _) = new_s.pop_first_two_bits();
-                
                 let mut cw = cur_cw[level * self.num_messages + i].node;
                 let (left_bit, right_bit) = cw.pop_first_two_bits();
-
-                // correction only applied if t is 1
-                let mask = (t as u128).wrapping_neg(); // for 0 this is 0, for 1 this is all 1s
+                let mask = (t as u128).wrapping_neg();
                 new_s ^= &Node::from(u128::from(cw) & mask);
                 let selected_bit = (left_bit & !path_bit) ^ (right_bit & path_bit);
                 new_t ^= selected_bit & t;
-
                 cur_seeds[i] = new_s;
                 cur_correction_bits[i] = new_t;
             }
@@ -335,6 +368,7 @@ impl<Output: DpfOutput> DpfKey<Output> {
         input_len: usize,
         beta: &Output,
     ) -> (DpfKey<Output>, DpfKey<Output>) {
+        // TODO: the init seeds were hardcoded in the original implementation, shouldnt they be random?
         let mut t_0 = false;
         let mut t_1 = true;
         let mut seed_0 = init_seeds.0;

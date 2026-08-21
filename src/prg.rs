@@ -34,6 +34,26 @@ pub fn double_prg(input: &Node, children: &[u8; 2]) -> [Node; 2] {
     out
 }
 
+// two independant AES enc on different seeds with same key
+pub fn double_prg_eval(seed_i: &Node, seed_j: &Node, ctr: u8) -> [Node; 2] {
+    let inp_xor = [
+        *seed_i ^ Node::from(ctr as u128),
+        *seed_j ^ Node::from(ctr as u128),
+    ];
+    let blocks = [
+        Block::from(*<Node as AsRef<[u8; 16]>>::as_ref(&inp_xor[0])),
+        Block::from(*<Node as AsRef<[u8; 16]>>::as_ref(&inp_xor[1])),
+    ];
+
+    let mut enc: [aes::Block; 2] = [[0u8; 16].into(), [0u8; 16].into()];
+    let _ = AES.encrypt_blocks_b2b(&blocks, &mut enc);
+
+    let mut out: [Node; 2] = unsafe { std::mem::transmute(enc) };
+    out[0] ^= &inp_xor[0];
+    out[1] ^= &inp_xor[1];
+    out
+}
+
 pub fn double_prg_many(input: &[Node], children: &[u8; 2], output: &mut [Node]) {
     const BLOCK_SIZE_INPUT: usize = 8;
     // The less interesting case
