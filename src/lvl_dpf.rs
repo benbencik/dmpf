@@ -2,7 +2,7 @@ use crate::OmrDmpf;
 use crate::OmrDmpfKey;
 // use super::BITS_OF_SECURITY;
 use crate::prg::double_prg;
-use crate::prg::double_prg_eval;
+use crate::prg::double_prg_eval_many;
 // use crate::prg::double_prg_many;
 // use crate::prg::many_prg;
 use crate::prg::DOUBLE_PRG_CHILDREN;
@@ -11,6 +11,10 @@ use crate::utils::Node;
 use crate::DmpfSession;
 use crate::DpfOutput;
 use rayon::prelude::*;
+
+// TODO: tune this based on the seed size and L2 cache
+// used in eval_dpf to chunk the AES calls efficiently
+const PRG_CHUNK: usize = 1 << 8;
 
 // TODO: consider correction words bundled with correction bits
 #[derive(Clone, Copy)]
@@ -142,57 +146,40 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
         cur_correction_bits[..n].copy_from_slice(&self.init_correction_bits[start..start + n]);
         let cur_cw = &self.cws[k];
 
+        let mut prg_out = [Node::default(); PRG_CHUNK];
         for level in 0..self.input_bits {
             let path_bit = get_bit(*input, level);
             let ctr = path_bit as u8;
 
-            let even_n = n - (n % 2);
-            for i in (0..even_n).step_by(2) {
-                let seeds = double_prg_eval(&cur_seeds[i], &cur_seeds[i + 1], ctr);
+            for chunk_start in (0..n).step_by(PRG_CHUNK) {
+                let chunk_end = (chunk_start + PRG_CHUNK).min(n);
+                let chunk_len = chunk_end - chunk_start;
+                // aesenc calls are batched the chunking should be set such that the calls
+                // fit inside cache (ideally L2)
+                double_prg_eval_many(
+                    &mut cur_seeds[chunk_start..chunk_end],
+                    ctr,
+                    &mut prg_out[..chunk_len],
+                );
+                for (idx, i) in (chunk_start..chunk_end).enumerate() {
+                    let t = cur_correction_bits[i];
 
-                // message i
-                let t = cur_correction_bits[i];
-                let mut new_s = seeds[0];
-                let (mut new_t, _) = new_s.pop_first_two_bits();
-                let mut cw = cur_cw[level * self.num_messages + i].node;
-                let (left_bit, right_bit) = cw.pop_first_two_bits();
-                let mask = (t as u128).wrapping_neg();
-                new_s ^= &Node::from(u128::from(cw) & mask);
-                let selected_bit = (left_bit & !path_bit) ^ (right_bit & path_bit);
-                new_t ^= selected_bit & t;
-                cur_seeds[i] = new_s;
-                cur_correction_bits[i] = new_t;
+                    let mut new_s = prg_out[idx];
+                    // TODO: this was also in the original eval implementation doublecheck that poping 2 bits is correct
+                    let (mut new_t, _) = new_s.pop_first_two_bits();
 
-                // message i + 1
-                let t = cur_correction_bits[i + 1];
-                let mut new_s = seeds[1];
-                let (mut new_t, _) = new_s.pop_first_two_bits();
-                let mut cw = cur_cw[level * self.num_messages + i + 1].node;
-                let (left_bit, right_bit) = cw.pop_first_two_bits();
-                let mask = (t as u128).wrapping_neg();
-                new_s ^= &Node::from(u128::from(cw) & mask);
-                let selected_bit = (left_bit & !path_bit) ^ (right_bit & path_bit);
-                new_t ^= selected_bit & t;
-                cur_seeds[i + 1] = new_s;
-                cur_correction_bits[i + 1] = new_t;
-            }
+                    let mut cw = cur_cw[level * self.num_messages + i].node;
+                    let (left_bit, right_bit) = cw.pop_first_two_bits();
 
-            // end case: one leftover message when n is odd
-            if n % 2 == 1 {
-                let i = n - 1;
-                let s = cur_seeds[i];
-                let t = cur_correction_bits[i];
-                let seeds = double_prg(&s, &DOUBLE_PRG_CHILDREN);
-                let mut new_s = seeds[path_bit as usize];
-                let (mut new_t, _) = new_s.pop_first_two_bits();
-                let mut cw = cur_cw[level * self.num_messages + i].node;
-                let (left_bit, right_bit) = cw.pop_first_two_bits();
-                let mask = (t as u128).wrapping_neg();
-                new_s ^= &Node::from(u128::from(cw) & mask);
-                let selected_bit = (left_bit & !path_bit) ^ (right_bit & path_bit);
-                new_t ^= selected_bit & t;
-                cur_seeds[i] = new_s;
-                cur_correction_bits[i] = new_t;
+                    // correction only applied if t is 1
+                    let mask = (t as u128).wrapping_neg();
+                    new_s ^= &Node::from(u128::from(cw) & mask);
+                    let selected_bit = (left_bit & !path_bit) ^ (right_bit & path_bit);
+                    new_t ^= selected_bit & t;
+
+                    cur_seeds[i] = new_s;
+                    cur_correction_bits[i] = new_t;
+                }
             }
         }
 
@@ -210,6 +197,10 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
 
     // outer loop, sequential: runs K single point DPFs
     pub fn eval_dmpf_seq(&self, input: &u128) -> Vec<Output> {
+        // double_prg_eval_many is doing unsafe pointer casts
+        // the Node and Block types must have the same size
+        assert!(std::mem::size_of::<Node>() == std::mem::size_of::<aes::Block>());
+
         let n = self.messages_count;
 
         // reuse across all K runs

@@ -54,6 +54,26 @@ pub fn double_prg_eval(seed_i: &Node, seed_j: &Node, ctr: u8) -> [Node; 2] {
     out
 }
 
+// many independant AES enc on different seeds with same key.
+pub fn double_prg_eval_many(seeds: &mut [Node], ctr: u8, out: &mut [Node]) {
+    let ctr = Node::from(ctr as u128);
+    for seed in seeds.iter_mut() {
+        *seed ^= ctr;
+    }
+
+    // same trick double_prg_many: reinterpret the Node slice as a Block slice
+    // using the same memory, but the pointer interprets into a different type
+    // block is Array<u8, U16> and Node is u128, unsafe they need to have the same size!
+    let blocks = unsafe { std::slice::from_raw_parts(seeds.as_ptr() as *const Block, seeds.len()) };
+    let enc = unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut Block, out.len()) };
+
+    let _ = AES.encrypt_blocks_b2b(blocks, enc);
+
+    for (o, seed) in out.iter_mut().zip(seeds.iter()) {
+        *o ^= seed;
+    }
+}
+
 pub fn double_prg_many(input: &[Node], children: &[u8; 2], output: &mut [Node]) {
     const BLOCK_SIZE_INPUT: usize = 8;
     // The less interesting case
