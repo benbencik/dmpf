@@ -1,4 +1,4 @@
-use std::simd::u64x8;
+use std::simd::{u64x4, u64x8};
 
 use crate::{
     utils::{Node, Node512},
@@ -54,7 +54,7 @@ pub fn double_prg_eval(seed_i: &Node, seed_j: &Node, ctr: u8) -> [Node; 2] {
     out
 }
 
-// many independant AES enc on different seeds with same key.
+// many independant AES enc on different seeds with same key
 pub fn double_prg_eval_many(seeds: &mut [Node], ctr: u8, out: &mut [Node]) {
     let ctr = Node::from(ctr as u128);
     for seed in seeds.iter_mut() {
@@ -69,8 +69,15 @@ pub fn double_prg_eval_many(seeds: &mut [Node], ctr: u8, out: &mut [Node]) {
 
     let _ = AES.encrypt_blocks_b2b(blocks, enc);
 
-    for (o, seed) in out.iter_mut().zip(seeds.iter()) {
-        *o ^= seed;
+    // use portable simd for final xor, seeds and out have even length
+    // the length is *2 because we are reinterpreting the slice as u64
+    debug_assert_eq!(seeds.len() % 2, 0, "requires an even-length slice");
+    let out_u64 =
+        unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u64, out.len() * 2) };
+    let seeds_u64 =
+        unsafe { std::slice::from_raw_parts(seeds.as_ptr() as *const u64, seeds.len() * 2) };
+    for (o, s) in out_u64.chunks_exact_mut(4).zip(seeds_u64.chunks_exact(4)) {
+        (u64x4::from_slice(o) ^ u64x4::from_slice(s)).copy_to_slice(o);
     }
 }
 

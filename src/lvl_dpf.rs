@@ -16,6 +16,9 @@ use rayon::prelude::*;
 // used in eval_dpf to chunk the AES calls efficiently
 const PRG_CHUNK: usize = 1 << 8;
 
+// double_prg_eval_many requires an even-length slice, assume PRG_CHUNK is even
+const _: () = assert!(PRG_CHUNK % 2 == 0, "PRG_CHUNK must be even");
+
 // TODO: consider correction words bundled with correction bits
 #[derive(Clone, Copy)]
 pub struct CorrectionWord {
@@ -154,12 +157,17 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
             for chunk_start in (0..n).step_by(PRG_CHUNK) {
                 let chunk_end = (chunk_start + PRG_CHUNK).min(n);
                 let chunk_len = chunk_end - chunk_start;
+
+                // double_prg_eval_many requires an even-length slice, for final simd xor 
+                let chunk_len_padded = chunk_len + (chunk_len % 2);
+                let chunk_end_padded = chunk_start + chunk_len_padded;                
+                
                 // aesenc calls are batched the chunking should be set such that the calls
                 // fit inside cache (ideally L2)
                 double_prg_eval_many(
-                    &mut cur_seeds[chunk_start..chunk_end],
+                    &mut cur_seeds[chunk_start..chunk_end_padded],
                     ctr,
-                    &mut prg_out[..chunk_len],
+                    &mut prg_out[..chunk_len_padded],
                 );
                 for (idx, i) in (chunk_start..chunk_end).enumerate() {
                     let t = cur_correction_bits[i];
