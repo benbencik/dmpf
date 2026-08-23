@@ -138,12 +138,13 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
         &self,
         k: usize,
         input: &u128,
+        offset_n: usize,
         cur_seeds: &mut [Node],
         cur_correction_bits: &mut [bool],
         output: &mut [Output],
     ) {
-        let n = self.messages_count;
-        let start = k * self.num_messages;
+        let n = output.len();
+        let start = k * self.num_messages + offset_n;
 
         cur_seeds[..n].copy_from_slice(&self.init_seeds[start..start + n]);
         cur_correction_bits[..n].copy_from_slice(&self.init_correction_bits[start..start + n]);
@@ -158,10 +159,10 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
                 let chunk_end = (chunk_start + PRG_CHUNK).min(n);
                 let chunk_len = chunk_end - chunk_start;
 
-                // double_prg_eval_many requires an even-length slice, for final simd xor 
+                // double_prg_eval_many requires an even-length slice, for final simd xor
                 let chunk_len_padded = chunk_len + (chunk_len % 2);
-                let chunk_end_padded = chunk_start + chunk_len_padded;                
-                
+                let chunk_end_padded = chunk_start + chunk_len_padded;
+
                 // aesenc calls are batched the chunking should be set such that the calls
                 // fit inside cache (ideally L2)
                 double_prg_eval_many(
@@ -176,7 +177,7 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
                     // TODO: this was also in the original eval implementation doublecheck that poping 2 bits is correct
                     let (mut new_t, _) = new_s.pop_first_two_bits();
 
-                    let mut cw = cur_cw[level * self.num_messages + i].node;
+                    let mut cw = cur_cw[level * self.num_messages + offset_n + i].node;
                     let (left_bit, right_bit) = cw.pop_first_two_bits();
 
                     // correction only applied if t is 1
@@ -194,9 +195,9 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
         for i in 0..n {
             let mut val = Output::from(cur_seeds[i]); // convert step of the DPF
             if cur_correction_bits[i] {
-                val += self.last_cw[k * self.num_messages + i];
+                val += self.last_cw[start + i];
             }
-            if self.init_correction_bits[k * self.num_messages + i] {
+            if self.init_correction_bits[start + i] {
                 val = val.neg();
             }
             output[i] += val; // accumulate the share of the output
@@ -220,6 +221,7 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
             self.eval_dpf(
                 k,
                 input,
+                0,
                 &mut cur_seeds,
                 &mut cur_correction_bits,
                 &mut output,
@@ -228,37 +230,40 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
         output
     }
 
-    // outer loop, parallel: runs K single point DPFs
+    // outer loop, parallel over number of messages
+    // splits message shares into chunks depending on number of threads
     pub fn eval_dmpf_par(&self, input: &u128) -> Vec<Output>
     where
         Output: Send + Sync,
     {
         let n = self.messages_count;
-        // TODO: K is small this might now be optimal for paralelism
-        (0..self.num_points)
-            .into_par_iter()
-            .map(|k| {
-                let mut cur_seeds = vec![Node::default(); n];
-                let mut cur_correction_bits = vec![false; n];
-                let mut partial = vec![Output::default(); n];
-                self.eval_dpf(
-                    k,
-                    input,
-                    &mut cur_seeds,
-                    &mut cur_correction_bits,
-                    &mut partial,
-                );
-                partial
-            })
-            .reduce(
-                || vec![Output::default(); n],
-                |mut acc, partial| {
-                    for i in 0..n {
-                        acc[i] += partial[i];
-                    }
-                    acc
-                },
-            )
+        let mut output = vec![Output::default(); n];
+        let num_threads = rayon::current_num_threads();
+        // TODO: make sure that PRG_CHUNK nicely divides the chunk size
+        let chunk_size = n.div_ceil(num_threads).max(1);
+
+        output
+            .par_chunks_mut(chunk_size)
+            .enumerate()
+            .for_each(|(chunk_idx, out_chunk)| {
+                // each thread owns a disjoint slice of seeds and correction bits
+                let chunk_len = out_chunk.len();
+                let mut cur_seeds = vec![Node::default(); chunk_len];
+                let mut cur_correction_bits = vec![false; chunk_len];
+
+                let offset_n = chunk_idx * chunk_size;
+                for k in 0..self.num_points {
+                    self.eval_dpf(
+                        k,
+                        input,
+                        offset_n,
+                        &mut cur_seeds,
+                        &mut cur_correction_bits,
+                        out_chunk,
+                    );
+                }
+            });
+        output
     }
 }
 
