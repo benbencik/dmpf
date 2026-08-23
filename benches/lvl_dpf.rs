@@ -60,7 +60,7 @@ fn random_db<R: RngCore>(
 
 fn bench_eval_dmpf_seq(c: &mut Criterion) {
     let mut rng = thread_rng();
-    let mut group = c.benchmark_group(format!("lvl_dmpf_eval_seq/k_{}", K));
+    let mut group = c.benchmark_group(format!("lvl_dmpf_eval_seq/K/{}", K));
 
     for &logn in [10, 12, 14, 16, 18].iter() {
         let n = 1 << logn;
@@ -69,7 +69,7 @@ fn bench_eval_dmpf_seq(c: &mut Criterion) {
         let input = ((rng.next_u64() as u128) << 64) | rng.next_u64() as u128;
 
         group.throughput(criterion::Throughput::Elements(n as u64));
-        group.bench_with_input(BenchmarkId::new("seq/logn", logn), &n, |b, _| {
+        group.bench_with_input(BenchmarkId::new("seq/logN", logn), &n, |b, _| {
             b.iter(|| db.eval_dmpf_seq(&input));
         });
     }
@@ -78,7 +78,7 @@ fn bench_eval_dmpf_seq(c: &mut Criterion) {
 
 fn bench_eval_dmpf_par(c: &mut Criterion) {
     let mut rng = thread_rng();
-    let mut group = c.benchmark_group(format!("lvl_dmpf_eval_par/k_{}", K));
+    let mut group = c.benchmark_group(format!("lvl_dmpf_eval_par/K/{}", K));
 
     for &logn in [10, 12, 14, 16, 18].iter() {
         let n = 1 << logn;
@@ -87,7 +87,7 @@ fn bench_eval_dmpf_par(c: &mut Criterion) {
         let input = ((rng.next_u64() as u128) << 64) | rng.next_u64() as u128;
 
         group.throughput(criterion::Throughput::Elements(n as u64));
-        group.bench_with_input(BenchmarkId::new("par/logn", logn), &n, |b, _| {
+        group.bench_with_input(BenchmarkId::new("par/logN", logn), &n, |b, _| {
             b.iter(|| db.eval_dmpf_par(&input));
         });
     }
