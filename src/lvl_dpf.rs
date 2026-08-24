@@ -19,6 +19,8 @@ const PRG_CHUNK: usize = 1 << 8;
 // double_prg_eval_many requires an even-length slice, assume PRG_CHUNK is even
 const _: () = assert!(PRG_CHUNK % 2 == 0, "PRG_CHUNK must be even");
 
+const MASK_128: u128 = 1u128.wrapping_neg();
+
 // TODO: consider correction words bundled with correction bits
 #[derive(Clone, Copy)]
 pub struct CorrectionWord {
@@ -181,7 +183,7 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
                     let (left_bit, right_bit) = cw.pop_first_two_bits();
 
                     // correction only applied if t is 1
-                    let mask = (t as u128).wrapping_neg();
+                    let mask: u128 = (t as u128) * MASK_128;
                     new_s ^= &Node::from(u128::from(cw) & mask);
                     let selected_bit = (left_bit & !path_bit) ^ (right_bit & path_bit);
                     new_t ^= selected_bit & t;
