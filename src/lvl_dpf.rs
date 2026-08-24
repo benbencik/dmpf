@@ -213,7 +213,8 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
         let n = self.messages_count;
 
         // reuse across all K runs
-        let mut cur_seeds = vec![Node::default(); n];
+        // +1 slot so the last PRG chunk can pad to even length
+        let mut cur_seeds = vec![Node::default(); n + (n % 2)];
         let mut cur_correction_bits = vec![false; n];
 
         let mut output = vec![Output::default(); n];
@@ -248,7 +249,8 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
             .for_each(|(chunk_idx, out_chunk)| {
                 // each thread owns a disjoint slice of seeds and correction bits
                 let chunk_len = out_chunk.len();
-                let mut cur_seeds = vec![Node::default(); chunk_len];
+                // +1 slot so the last PRG chunk can pad to even length
+                let mut cur_seeds = vec![Node::default(); chunk_len + (chunk_len % 2)];
                 let mut cur_correction_bits = vec![false; chunk_len];
 
                 let offset_n = chunk_idx * chunk_size;
