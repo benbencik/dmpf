@@ -9,6 +9,7 @@ use aes::{
     Aes128, Block,
 };
 use once_cell::sync::Lazy;
+const XOR_VAL_64X4: std::simd::prelude::Simd<u64, 4> = u64x4::from_array([1u64, 0, 1u64, 0]);
 const DPF_AES_KEY: [u8; BYTES_OF_SECURITY] =
     [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 1, 2];
 static AES: Lazy<Aes128> = Lazy::new(|| Aes128::new_from_slice(&DPF_AES_KEY).unwrap());
@@ -55,10 +56,18 @@ pub fn double_prg_eval(seed_i: &Node, seed_j: &Node, ctr: u8) -> [Node; 2] {
 }
 
 // many independant AES enc on different seeds with same key
+// TODO: currently we use u64x4 assuming there are 256 bit registers make this suitiable also for other CPUs
 pub fn double_prg_eval_many(seeds: &mut [Node], ctr: u8, out: &mut [Node]) {
-    let ctr = Node::from(ctr as u128);
-    for seed in seeds.iter_mut() {
-        *seed ^= ctr;
+    debug_assert_eq!(seeds.len() % 2, 0, "requires an even-length slice");
+
+    // skip for 0, XOR 0 does not change the result
+    if ctr == 1 {
+        let seeds_u64 = unsafe {
+            std::slice::from_raw_parts_mut(seeds.as_mut_ptr() as *mut u64, seeds.len() * 2)
+        };
+        for s in seeds_u64.chunks_exact_mut(4) {
+            (u64x4::from_slice(s) ^ XOR_VAL_64X4).copy_to_slice(s);
+        }
     }
 
     // same trick double_prg_many: reinterpret the Node slice as a Block slice
@@ -71,7 +80,6 @@ pub fn double_prg_eval_many(seeds: &mut [Node], ctr: u8, out: &mut [Node]) {
 
     // use portable simd for final xor, seeds and out have even length
     // the length is *2 because we are reinterpreting the slice as u64
-    debug_assert_eq!(seeds.len() % 2, 0, "requires an even-length slice");
     let out_u64 =
         unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u64, out.len() * 2) };
     let seeds_u64 =
