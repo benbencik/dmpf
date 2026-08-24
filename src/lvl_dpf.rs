@@ -150,12 +150,16 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
 
         cur_seeds[..n].copy_from_slice(&self.init_seeds[start..start + n]);
         cur_correction_bits[..n].copy_from_slice(&self.init_correction_bits[start..start + n]);
-        let cur_cw = &self.cws[k];
+        let cur_cw = &self.cws[k]; // correction words for this point
 
         let mut prg_out = [Node::default(); PRG_CHUNK];
         for level in 0..self.input_bits {
             let path_bit = get_bit(*input, level);
             let ctr = path_bit as u8;
+
+            // get slice of correction words for this level for faster indexing
+            let level_cw = &cur_cw
+                [level * self.num_messages + offset_n..level * self.num_messages + offset_n + n];
 
             for chunk_start in (0..n).step_by(PRG_CHUNK) {
                 let chunk_end = (chunk_start + PRG_CHUNK).min(n);
@@ -179,7 +183,7 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
                     // TODO: this was also in the original eval implementation doublecheck that poping 2 bits is correct
                     let (mut new_t, _) = new_s.pop_first_two_bits();
 
-                    let mut cw = cur_cw[level * self.num_messages + offset_n + i].node;
+                    let mut cw = level_cw[i].node;
                     let (left_bit, right_bit) = cw.pop_first_two_bits();
 
                     // correction only applied if t is 1
