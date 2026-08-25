@@ -56,8 +56,27 @@ pub fn double_prg_eval(seed_i: &Node, seed_j: &Node, ctr: u8) -> [Node; 2] {
 }
 
 // many independant AES enc on different seeds with same key
-// TODO: currently we use u64x4 assuming there are 256 bit registers make this suitiable also for other CPUs
 pub fn double_prg_eval_many(seeds: &mut [Node], ctr: u8, out: &mut [Node]) {
+    if ctr != 0 {
+        let ctr = Node::from(ctr as u128);
+        for seed in seeds.iter_mut() {
+            *seed ^= ctr;
+        }
+    }
+
+    let blocks = unsafe { std::slice::from_raw_parts(seeds.as_ptr() as *const Block, seeds.len()) };
+    let enc = unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut Block, out.len()) };
+
+    let _ = AES.encrypt_blocks_b2b(blocks, enc);
+
+    for (o, seed) in out.iter_mut().zip(seeds.iter()) {
+        *o ^= *seed;
+    }
+}
+
+// many independant AES enc on different seeds with same key
+// xor operations are vectorized using simd
+pub fn double_prg_eval_many_vectorized(seeds: &mut [Node], ctr: u8, out: &mut [Node]) {
     debug_assert_eq!(seeds.len() % 2, 0, "requires an even-length slice");
 
     // skip for 0, XOR 0 does not change the result

@@ -3,6 +3,7 @@ use crate::OmrDmpfKey;
 // use super::BITS_OF_SECURITY;
 use crate::prg::double_prg;
 use crate::prg::double_prg_eval_many;
+use crate::prg::double_prg_eval_many_vectorized;
 // use crate::prg::double_prg_many;
 // use crate::prg::many_prg;
 use crate::prg::DOUBLE_PRG_CHILDREN;
@@ -210,6 +211,97 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
         }
     }
 
+    // TODO: add real vectorized ops
+    // right now this is just copy of eval_dpf
+    fn eval_dpf_vectorized(
+        &self,
+        k: usize,
+        input: &u128,
+        offset_n: usize,
+        cur_seeds: &mut [Node],
+        cur_correction_bits: &mut [bool],
+        output: &mut [Output],
+    ) {
+        let n = output.len();
+        let start = k * self.num_messages + offset_n;
+
+        cur_seeds[..n].copy_from_slice(&self.init_seeds[start..start + n]);
+        cur_correction_bits[..n].copy_from_slice(&self.init_correction_bits[start..start + n]);
+        let cur_cw = &self.cws[k]; // correction words for this point
+
+        let mut prg_out = [Node::default(); PRG_CHUNK];
+        for level in 0..self.input_bits {
+            let path_bit = get_bit(*input, level);
+            let ctr = path_bit as u8;
+
+            // get slice of correction words for this level for faster indexing
+            let level_cw = &cur_cw
+                [level * self.num_messages + offset_n..level * self.num_messages + offset_n + n];
+
+            for chunk_start in (0..n).step_by(PRG_CHUNK) {
+                let chunk_end = (chunk_start + PRG_CHUNK).min(n);
+                let chunk_len = chunk_end - chunk_start;
+
+                // double_prg_eval_many requires an even-length slice, for final simd xor
+                let chunk_len_padded = chunk_len + (chunk_len % 2);
+                let chunk_end_padded = chunk_start + chunk_len_padded;
+
+                // aesenc calls are batched the chunking should be set such that the calls
+                // fit inside cache (ideally L2)
+                double_prg_eval_many_vectorized(
+                    &mut cur_seeds[chunk_start..chunk_end_padded],
+                    ctr,
+                    &mut prg_out[..chunk_len_padded],
+                );
+                for (idx, i) in (chunk_start..chunk_end).enumerate() {
+                    let t = cur_correction_bits[i];
+
+                    let mut new_s = prg_out[idx];
+                    // TODO: this was also in the original eval implementation doublecheck that poping 2 bits is correct
+                    let (mut new_t, _) = new_s.pop_first_two_bits();
+
+                    let mut cw = level_cw[i].node;
+                    let (left_bit, right_bit) = cw.pop_first_two_bits();
+
+                    // correction only applied if t is 1
+                    let mask: u128 = (t as u128) * MASK_128;
+                    new_s ^= &Node::from(u128::from(cw) & mask);
+                    let selected_bit = (left_bit & !path_bit) ^ (right_bit & path_bit);
+                    new_t ^= selected_bit & t;
+
+                    cur_seeds[i] = new_s;
+                    cur_correction_bits[i] = new_t;
+                }
+            }
+        }
+
+        for i in 0..n {
+            let mut val = Output::from(cur_seeds[i]); // convert step of the DPF
+            if cur_correction_bits[i] {
+                val += self.last_cw[start + i];
+            }
+            if self.init_correction_bits[start + i] {
+                val = val.neg();
+            }
+            output[i] += val; // accumulate the share of the output
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn pick_eval_dpf() -> fn(&Self, usize, &u128, usize, &mut [Node], &mut [bool], &mut [Output]) {
+        // true if CPU has 256-bit SIMD registers (AVX2), needed for eval_dpf_vectorized
+        #[cfg(target_arch = "x86_64")]
+        let has_u64x4_simd = is_x86_feature_detected!("avx2");
+        #[cfg(not(target_arch = "x86_64"))]
+        let has_u64x4_simd = false;
+
+        if has_u64x4_simd {
+            Self::eval_dpf_vectorized
+        } else {
+            Self::eval_dpf
+        }
+    }
+
     // outer loop, sequential: runs K single point DPFs
     pub fn eval_dmpf_seq(&self, input: &u128) -> Vec<Output> {
         // double_prg_eval_many is doing unsafe pointer casts
@@ -224,8 +316,10 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
         let mut cur_correction_bits = vec![false; n];
 
         let mut output = vec![Output::default(); n];
+        let eval_dpf = Self::pick_eval_dpf();
         for k in 0..self.num_points {
-            self.eval_dpf(
+            eval_dpf(
+                self,
                 k,
                 input,
                 0,
@@ -248,6 +342,7 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
         let num_threads = rayon::current_num_threads();
         // TODO: make sure that PRG_CHUNK nicely divides the chunk size
         let chunk_size = n.div_ceil(num_threads).max(1);
+        let eval_dpf = Self::pick_eval_dpf();
 
         output
             .par_chunks_mut(chunk_size)
@@ -261,7 +356,8 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
 
                 let offset_n = chunk_idx * chunk_size;
                 for k in 0..self.num_points {
-                    self.eval_dpf(
+                    eval_dpf(
+                        self,
                         k,
                         input,
                         offset_n,
