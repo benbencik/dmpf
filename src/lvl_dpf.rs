@@ -44,7 +44,7 @@ impl<Output: DpfOutput> OmrDmpf<Output> for LvlDpfDmpf {
         let mut first_keys = Vec::with_capacity(inputs.len());
         let mut second_keys = Vec::with_capacity(inputs.len());
         inputs.iter().for_each(|(k, v)| {
-            // TODo: initial seeds are random should we enforce them to be 127bit?
+            // TODO: initial seeds are random u128 should we enforce them to be 127bit?
             let init_seeds = (Node::random(&mut rng), Node::random(&mut rng));
             let (f, s) = DpfKey::gen(&init_seeds, k, input_length, v);
             first_keys.push(f);
@@ -181,8 +181,7 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
                     let t = cur_correction_bits[i];
 
                     let mut new_s = prg_out[idx];
-                    // TODO: this was also in the original eval implementation doublecheck that poping 2 bits is correct
-                    let (mut new_t, _) = new_s.pop_first_two_bits();
+                    let mut new_t = new_s.pop_first_bit();
 
                     let mut cw = level_cw[i].node;
                     let (left_bit, right_bit) = cw.pop_first_two_bits();
@@ -257,8 +256,7 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
                     let t = cur_correction_bits[i];
 
                     let mut new_s = prg_out[idx];
-                    // TODO: this was also in the original eval implementation doublecheck that poping 2 bits is correct
-                    let (mut new_t, _) = new_s.pop_first_two_bits();
+                    let mut new_t = new_s.pop_first_bit();
 
                     let mut cw = level_cw[i].node;
                     let (left_bit, right_bit) = cw.pop_first_two_bits();

@@ -254,6 +254,13 @@ impl Node {
         output.fill(rng);
         output
     }
+    
+    pub fn pop_first_bit(&mut self) -> bool {
+        let output = self.0 & 1 == 1;
+        self.0 &= !3u128;
+        output
+    }
+
     pub fn pop_first_two_bits(&mut self) -> (bool, bool) {
         let output = self.0 & 1 == 1;
         let output_2 = self.0 & 2 == 2;
