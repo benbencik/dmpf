@@ -16,15 +16,8 @@ use rayon::prelude::*;
 
 // TODO: tune this based on the seed size and L2 cache
 // used in eval_dpf to chunk the AES calls efficiently
-const PRG_CHUNK: usize = 1 << 8;
-
-// prg_eval_select requires an even-length slice, assume PRG_CHUNK is even
-const _: () = assert!(PRG_CHUNK % 2 == 0, "PRG_CHUNK must be even");
-
-const MASK_ALL_128: u128 = u128::MAX;
-const MASK_ALL_64: u64 = u64::MAX;
-const MASK_TWO_BITS_64: u64 = !3u64;
-const MASK_TWO_BITS_64X4: u64x4 = u64x4::from_array([!3u64, u64::MAX, !3u64, u64::MAX]);
+// ! MUST BE EVEN, enforeced by assert
+const PRG_CHUNK: usize = 1 << 8 ;
 
 #[derive(Clone, Copy)]
 pub struct CorrectionWord {
@@ -76,7 +69,13 @@ pub struct LvlDpfDmpfDb<Output> {
 }
 
 impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
+    const MASK_ALL_128: u128 = u128::MAX;
+    const MASK_ALL_64: u64 = u64::MAX;
+    const MASK_TWO_BITS_64: u64 = !3u64;
+    const MASK_TWO_BITS_128: u64x4 = u64x4::from_array([!3u64, u64::MAX, !3u64, u64::MAX]);
+
     pub fn new(input_bits: usize, num_points: usize, num_messages: usize) -> Self {
+        assert!(PRG_CHUNK % 2 == 0, "PRG_CHUNK must be even");
         Self {
             input_bits,
             num_points,
@@ -105,6 +104,7 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
         cws: Vec<Vec<CorrectionWord>>,
         last_cw: Vec<Output>,
     ) -> Self {
+        assert!(PRG_CHUNK % 2 == 0, "PRG_CHUNK must be even");
         assert_eq!(init_seeds.len(), num_points * num_messages);
         assert_eq!(init_correction_bits.len(), num_points * num_messages);
         assert_eq!(cws.len(), num_points);
@@ -189,7 +189,7 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
                     let (left_bit, right_bit) = cw.pop_first_two_bits();
 
                     // branchless correction only applied if t is 1
-                    let mask_correction_bits: u128 = (t as u128) * MASK_ALL_128;
+                    let mask_correction_bits: u128 = (t as u128) * Self::MASK_ALL_128;
                     new_s ^= &Node::from(u128::from(cw) & mask_correction_bits);
                     let selected_bit = (left_bit & !path_bit) ^ (right_bit & path_bit);
                     new_t ^= selected_bit & t;
@@ -296,13 +296,13 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
                     let prg_simd = u64x4::from_slice(prg_pair);
                     let cw_simd = u64x4::from_slice(cw_pair);
 
-                    let mask_t0_64 = (t_pair[0] as u64) * MASK_ALL_64;
-                    let mask_t1_64 = (t_pair[1] as u64) * MASK_ALL_64;
+                    let mask_t0_64 = (t_pair[0] as u64) * Self::MASK_ALL_64;
+                    let mask_t1_64 = (t_pair[1] as u64) * Self::MASK_ALL_64;
                     let mask_correction_bits =
                         u64x4::from_array([mask_t0_64, mask_t0_64, mask_t1_64, mask_t1_64]);
 
                     let new_seed =
-                        (prg_simd ^ (cw_simd & mask_correction_bits)) & MASK_TWO_BITS_64X4;
+                        (prg_simd ^ (cw_simd & mask_correction_bits)) & Self::MASK_TWO_BITS_128;
                     new_seed.copy_to_slice(seed_pair);
 
                     t_pair[0] =
@@ -319,8 +319,8 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
                     cw.remainder(),
                     t.into_remainder(),
                 ) {
-                    let mask_correction_bits = (*t0 as u64) * MASK_ALL_64;
-                    *seed_lo = (*prg_lo ^ (*cw_lo & mask_correction_bits)) & MASK_TWO_BITS_64;
+                    let mask_correction_bits = (*t0 as u64) * Self::MASK_ALL_64;
+                    *seed_lo = (*prg_lo ^ (*cw_lo & mask_correction_bits)) & Self::MASK_TWO_BITS_64;
                     *seed_hi = prg_hi ^ (cw_hi & mask_correction_bits);
                     *t0 = Self::update_correction_bit(*prg_lo, *cw_lo, *t0, path_bit);
                 }
