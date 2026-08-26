@@ -230,7 +230,7 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
         unsafe { core::slice::from_raw_parts(s.as_ptr().cast::<u64>(), s.len() * 2) }
     }
 
-    // same update as in eval_dpf 
+    // same update as in eval_dpf
     #[inline(always)]
     fn update_correction_bit(prg_lo: u64, cw_lo: u64, t: bool, path_bit: bool) -> bool {
         let left_bit = cw_lo & 1 == 1;
@@ -298,13 +298,17 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
 
                     let mask_t0_64 = (t_pair[0] as u64) * MASK_ALL_64;
                     let mask_t1_64 = (t_pair[1] as u64) * MASK_ALL_64;
-                    let mask_correction_bits = u64x4::from_array([mask_t0_64, mask_t0_64, mask_t1_64, mask_t1_64]);
+                    let mask_correction_bits =
+                        u64x4::from_array([mask_t0_64, mask_t0_64, mask_t1_64, mask_t1_64]);
 
-                    let new_seed = (prg_simd ^ (cw_simd & mask_correction_bits)) & MASK_TWO_BITS_64X4;
+                    let new_seed =
+                        (prg_simd ^ (cw_simd & mask_correction_bits)) & MASK_TWO_BITS_64X4;
                     new_seed.copy_to_slice(seed_pair);
 
-                    t_pair[0] = Self::update_correction_bit(prg_pair[0], cw_pair[0], t_pair[0], path_bit);
-                    t_pair[1] = Self::update_correction_bit(prg_pair[2], cw_pair[2], t_pair[1], path_bit);
+                    t_pair[0] =
+                        Self::update_correction_bit(prg_pair[0], cw_pair[0], t_pair[0], path_bit);
+                    t_pair[1] =
+                        Self::update_correction_bit(prg_pair[2], cw_pair[2], t_pair[1], path_bit);
                 }
 
                 // handle odd number of chunks, without simd
