@@ -11,6 +11,7 @@ use crate::prg::DOUBLE_PRG_CHILDREN;
 use crate::utils::Node;
 use crate::DmpfSession;
 use crate::DpfOutput;
+use core::simd::u64x4;
 use rayon::prelude::*;
 
 // TODO: tune this based on the seed size and L2 cache
@@ -20,7 +21,10 @@ const PRG_CHUNK: usize = 1 << 8;
 // prg_eval_select requires an even-length slice, assume PRG_CHUNK is even
 const _: () = assert!(PRG_CHUNK % 2 == 0, "PRG_CHUNK must be even");
 
-const MASK_128: u128 = u128::MAX;
+const MASK_ALL_128: u128 = u128::MAX;
+const MASK_ALL_64: u64 = u64::MAX;
+const MASK_TWO_BITS_64: u64 = !3u64;
+const MASK_TWO_BITS_64X4: u64x4 = u64x4::from_array([!3u64, u64::MAX, !3u64, u64::MAX]);
 
 #[derive(Clone, Copy)]
 pub struct CorrectionWord {
@@ -184,9 +188,9 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
                     let mut cw = level_cw[i].node;
                     let (left_bit, right_bit) = cw.pop_first_two_bits();
 
-                    // correction only applied if t is 1
-                    let mask: u128 = (t as u128) * MASK_128;
-                    new_s ^= &Node::from(u128::from(cw) & mask);
+                    // branchless correction only applied if t is 1
+                    let mask_correction_bits: u128 = (t as u128) * MASK_ALL_128;
+                    new_s ^= &Node::from(u128::from(cw) & mask_correction_bits);
                     let selected_bit = (left_bit & !path_bit) ^ (right_bit & path_bit);
                     new_t ^= selected_bit & t;
 
@@ -208,8 +212,35 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
         }
     }
 
-    // TODO: add real vectorized ops
-    // right now this is just copy of eval_dpf
+    // split to pair of u64 to load into simd register
+    #[inline(always)]
+    fn nodes_u64(s: &[Node]) -> &[u64] {
+        unsafe { core::slice::from_raw_parts(s.as_ptr().cast::<u64>(), s.len() * 2) }
+    }
+
+    // split to pair of u64 to load into simd register
+    #[inline(always)]
+    fn nodes_u64_mut(s: &mut [Node]) -> &mut [u64] {
+        unsafe { core::slice::from_raw_parts_mut(s.as_mut_ptr().cast::<u64>(), s.len() * 2) }
+    }
+
+    // split to pair of u64 to load into simd register
+    #[inline(always)]
+    fn cws_u64(s: &[CorrectionWord]) -> &[u64] {
+        unsafe { core::slice::from_raw_parts(s.as_ptr().cast::<u64>(), s.len() * 2) }
+    }
+
+    // same update as in eval_dpf 
+    #[inline(always)]
+    fn update_correction_bit(prg_lo: u64, cw_lo: u64, t: bool, path_bit: bool) -> bool {
+        let left_bit = cw_lo & 1 == 1;
+        let right_bit = (cw_lo >> 1) & 1 == 1;
+        let selected_bit = (left_bit & !path_bit) ^ (right_bit & path_bit);
+        let new_t = (prg_lo & 1) == 1;
+        new_t ^ (selected_bit & t)
+    }
+
+    // same as eval_dpf but uses simd u64x4
     fn eval_dpf_vectorized(
         &self,
         k: usize,
@@ -225,6 +256,8 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
         cur_seeds[..n].copy_from_slice(&self.init_seeds[start..start + n]);
         cur_correction_bits[..n].copy_from_slice(&self.init_correction_bits[start..start + n]);
         let cur_cw = &self.cws[k]; // correction words for this point
+
+        // clears the two tag bits in the low u64 of each 128-bit node
 
         let mut prg_out = [Node::default(); PRG_CHUNK];
         for level in 0..self.input_bits {
@@ -250,27 +283,47 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
                     ctr,
                     &mut prg_out[..chunk_len_padded],
                 );
-                for (idx, i) in (chunk_start..chunk_end).enumerate() {
-                    let t = cur_correction_bits[i];
 
-                    let mut new_s = prg_out[idx];
-                    let mut new_t = new_s.pop_first_bit();
+                let mut prg = Self::nodes_u64(&prg_out[..chunk_len]).chunks_exact(4); // [lo,hi] per node
+                let mut seeds =
+                    Self::nodes_u64_mut(&mut cur_seeds[chunk_start..chunk_end]).chunks_exact_mut(4);
+                let mut cw = Self::cws_u64(&level_cw[chunk_start..chunk_end]).chunks_exact(4); // [lo,hi] per word
+                let mut t = cur_correction_bits[chunk_start..chunk_end].chunks_exact_mut(2);
 
-                    let mut cw = level_cw[i].node;
-                    let (left_bit, right_bit) = cw.pop_first_two_bits();
+                for (((seed_pair, prg_pair), cw_pair), t_pair) in
+                    (&mut seeds).zip(&mut prg).zip(&mut cw).zip(&mut t)
+                {
+                    let prg_simd = u64x4::from_slice(prg_pair);
+                    let cw_simd = u64x4::from_slice(cw_pair);
 
-                    // correction only applied if t is 1
-                    let mask: u128 = (t as u128) * MASK_128;
-                    new_s ^= &Node::from(u128::from(cw) & mask);
-                    let selected_bit = (left_bit & !path_bit) ^ (right_bit & path_bit);
-                    new_t ^= selected_bit & t;
+                    let mask_t0_64 = (t_pair[0] as u64) * MASK_ALL_64;
+                    let mask_t1_64 = (t_pair[1] as u64) * MASK_ALL_64;
+                    let mask_correction_bits = u64x4::from_array([mask_t0_64, mask_t0_64, mask_t1_64, mask_t1_64]);
 
-                    cur_seeds[i] = new_s;
-                    cur_correction_bits[i] = new_t;
+                    let new_seed = (prg_simd ^ (cw_simd & mask_correction_bits)) & MASK_TWO_BITS_64X4;
+                    new_seed.copy_to_slice(seed_pair);
+
+                    t_pair[0] = Self::update_correction_bit(prg_pair[0], cw_pair[0], t_pair[0], path_bit);
+                    t_pair[1] = Self::update_correction_bit(prg_pair[2], cw_pair[2], t_pair[1], path_bit);
+                }
+
+                // handle odd number of chunks, without simd
+                // we can also pad but that would require chanding LvlDpfDmpfDb this seems simpler
+                if let ([seed_lo, seed_hi], [prg_lo, prg_hi], [cw_lo, cw_hi], [t0]) = (
+                    seeds.into_remainder(),
+                    prg.remainder(),
+                    cw.remainder(),
+                    t.into_remainder(),
+                ) {
+                    let mask_correction_bits = (*t0 as u64) * MASK_ALL_64;
+                    *seed_lo = (*prg_lo ^ (*cw_lo & mask_correction_bits)) & MASK_TWO_BITS_64;
+                    *seed_hi = prg_hi ^ (cw_hi & mask_correction_bits);
+                    *t0 = Self::update_correction_bit(*prg_lo, *cw_lo, *t0, path_bit);
                 }
             }
         }
 
+        // TODO: this part is not vectorized, but it should not be a bottleneck
         for i in 0..n {
             let mut val = Output::from(cur_seeds[i]); // convert step of the DPF
             if cur_correction_bits[i] {
@@ -367,6 +420,8 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
     }
 }
 
+// TODO: fields unused...struct based on the original implementation, might change later
+#[allow(unused)]
 pub struct LvlDpfDmpfSession {
     cur_seeds: Vec<Node>,
     next_seeds: Vec<Node>,
@@ -419,6 +474,9 @@ impl<Output: DpfOutput> OmrDmpfKey<Output> for LvlDpfDmpfKey<Output> {
         self.dpf_keys.len()
     }
 }
+
+// TODO: input_bits unused...struct based on the original implementation, might change later
+#[allow(unused)]
 pub struct DpfKey<Output> {
     init_seed: Node,
     init_correction_bit: bool,
