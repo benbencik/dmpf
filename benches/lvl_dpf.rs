@@ -97,6 +97,6 @@ fn bench_eval_dmpf_par(c: &mut Criterion) {
 criterion_group!(
     name = benches;
     config = Criterion::default().sample_size(10);
-    targets = bench_eval_dmpf_seq, bench_eval_dmpf_par
+    targets = bench_eval_dmpf_seq
 );
 criterion_main!(benches);

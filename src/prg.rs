@@ -12,6 +12,8 @@ use once_cell::sync::Lazy;
 const XOR_VAL_64X4: std::simd::prelude::Simd<u64, 4> = u64x4::from_array([1u64, 0, 1u64, 0]);
 const DPF_AES_KEY: [u8; BYTES_OF_SECURITY] =
     [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 1, 2];
+
+// threads shares the same instance prg eval does not mutate
 static AES: Lazy<Aes128> = Lazy::new(|| Aes128::new_from_slice(&DPF_AES_KEY).unwrap());
 
 pub(crate) const DOUBLE_PRG_CHILDREN: [u8; 2] = [0, 1];
@@ -56,7 +58,8 @@ pub fn double_prg_eval(seed_i: &Node, seed_j: &Node, ctr: u8) -> [Node; 2] {
 }
 
 // many independant AES enc on different seeds with same key
-pub fn double_prg_eval_many(seeds: &mut [Node], ctr: u8, out: &mut [Node]) {
+// computes only the child selected by ctr for every seed
+pub fn prg_eval_select(seeds: &mut [Node], ctr: u8, out: &mut [Node]) {
     if ctr != 0 {
         let ctr = Node::from(ctr as u128);
         for seed in seeds.iter_mut() {
@@ -75,8 +78,9 @@ pub fn double_prg_eval_many(seeds: &mut [Node], ctr: u8, out: &mut [Node]) {
 }
 
 // many independant AES enc on different seeds with same key
+// computes only the child selected by ctr for every seed
 // xor operations are vectorized using simd
-pub fn double_prg_eval_many_vectorized(seeds: &mut [Node], ctr: u8, out: &mut [Node]) {
+pub fn prg_eval_select_vectorized(seeds: &mut [Node], ctr: u8, out: &mut [Node]) {
     debug_assert_eq!(seeds.len() % 2, 0, "requires an even-length slice");
 
     // skip for 0, XOR 0 does not change the result

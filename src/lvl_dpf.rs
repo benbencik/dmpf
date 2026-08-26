@@ -2,8 +2,8 @@ use crate::OmrDmpf;
 use crate::OmrDmpfKey;
 // use super::BITS_OF_SECURITY;
 use crate::prg::double_prg;
-use crate::prg::double_prg_eval_many;
-use crate::prg::double_prg_eval_many_vectorized;
+use crate::prg::prg_eval_select;
+use crate::prg::prg_eval_select_vectorized;
 // use crate::prg::double_prg_many;
 // use crate::prg::many_prg;
 use crate::prg::DOUBLE_PRG_CHILDREN;
@@ -17,12 +17,11 @@ use rayon::prelude::*;
 // used in eval_dpf to chunk the AES calls efficiently
 const PRG_CHUNK: usize = 1 << 8;
 
-// double_prg_eval_many requires an even-length slice, assume PRG_CHUNK is even
+// prg_eval_select requires an even-length slice, assume PRG_CHUNK is even
 const _: () = assert!(PRG_CHUNK % 2 == 0, "PRG_CHUNK must be even");
 
-const MASK_128: u128 = 1u128.wrapping_neg();
+const MASK_128: u128 = u128::MAX;
 
-// TODO: consider correction words bundled with correction bits
 #[derive(Clone, Copy)]
 pub struct CorrectionWord {
     node: Node,
@@ -44,7 +43,6 @@ impl<Output: DpfOutput> OmrDmpf<Output> for LvlDpfDmpf {
         let mut first_keys = Vec::with_capacity(inputs.len());
         let mut second_keys = Vec::with_capacity(inputs.len());
         inputs.iter().for_each(|(k, v)| {
-            // TODO: initial seeds are random u128 should we enforce them to be 127bit?
             let init_seeds = (Node::random(&mut rng), Node::random(&mut rng));
             let (f, s) = DpfKey::gen(&init_seeds, k, input_length, v);
             first_keys.push(f);
@@ -166,13 +164,13 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
                 let chunk_end = (chunk_start + PRG_CHUNK).min(n);
                 let chunk_len = chunk_end - chunk_start;
 
-                // double_prg_eval_many requires an even-length slice, for final simd xor
+                // prg_eval_select requires an even-length slice, for final simd xor
                 let chunk_len_padded = chunk_len + (chunk_len % 2);
                 let chunk_end_padded = chunk_start + chunk_len_padded;
 
                 // aesenc calls are batched the chunking should be set such that the calls
                 // fit inside cache (ideally L2)
-                double_prg_eval_many(
+                prg_eval_select(
                     &mut cur_seeds[chunk_start..chunk_end_padded],
                     ctr,
                     &mut prg_out[..chunk_len_padded],
@@ -241,13 +239,13 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
                 let chunk_end = (chunk_start + PRG_CHUNK).min(n);
                 let chunk_len = chunk_end - chunk_start;
 
-                // double_prg_eval_many requires an even-length slice, for final simd xor
+                // prg_eval_select_vectorized requires an even-length slice, for final simd xor
                 let chunk_len_padded = chunk_len + (chunk_len % 2);
                 let chunk_end_padded = chunk_start + chunk_len_padded;
 
                 // aesenc calls are batched the chunking should be set such that the calls
                 // fit inside cache (ideally L2)
-                double_prg_eval_many_vectorized(
+                prg_eval_select_vectorized(
                     &mut cur_seeds[chunk_start..chunk_end_padded],
                     ctr,
                     &mut prg_out[..chunk_len_padded],
@@ -302,7 +300,7 @@ impl<Output: DpfOutput> LvlDpfDmpfDb<Output> {
 
     // outer loop, sequential: runs K single point DPFs
     pub fn eval_dmpf_seq(&self, input: &u128) -> Vec<Output> {
-        // double_prg_eval_many is doing unsafe pointer casts
+        // prg_eval_select is doing unsafe pointer casts
         // the Node and Block types must have the same size
         assert!(std::mem::size_of::<Node>() == std::mem::size_of::<aes::Block>());
 
@@ -653,146 +651,3 @@ mod db_tests {
         }
     }
 }
-
-//     pub fn eval_all_xor_output_with_session(
-//         &self,
-//         output: &mut [Output],
-//         session: &mut LvlDpfDmpfSession,
-//     ) {
-//         let LvlDpfDmpfSession {
-//             cur_seeds,
-//             next_seeds,
-//             cur_signs,
-//             next_signs,
-//         } = session;
-//         self.eval_all_with_cache_xor_output(cur_seeds, next_seeds, cur_signs, next_signs, output)
-//     }
-//     pub fn eval_all_with_cache_xor_output<'a>(
-//         &self,
-//         cur_seeds_orig: &'a mut [Node],
-//         next_seeds_orig: &mut [Node],
-//         cur_signs_orig: &'a mut [bool],
-//         next_signs_orig: &mut [bool],
-//         output: &mut [Output],
-//     ) {
-//         let mut cur_seeds = cur_seeds_orig;
-//         let mut next_seeds = next_seeds_orig;
-//         let mut cur_signs = cur_signs_orig;
-//         let mut next_signs = next_signs_orig;
-//         cur_seeds[0] = self.init_seed;
-//         cur_signs[0] = self.init_correction_bit;
-//         for depth in 0..self.input_bits {
-//             double_prg_many(
-//                 &cur_seeds[..1 << depth],
-//                 &DOUBLE_PRG_CHILDREN,
-//                 &mut next_seeds[..2 << depth],
-//             );
-//             let mut cur_cw = self.cws[depth].node;
-//             let (cw_t_l, cw_t_r) = cur_cw.pop_first_two_bits();
-//             next_seeds[..2 << depth]
-//                 .chunks_exact_mut(2)
-//                 .zip(next_signs[..2 << depth].chunks_exact_mut(2))
-//                 .zip(cur_signs[..1 << depth].iter().copied())
-//                 .for_each(|((seeds, signs), cur_sign)| {
-//                     let mut seed_l = seeds[0];
-//                     let mut seed_r = seeds[1];
-//                     let (mut t_l, _) = seed_l.pop_first_two_bits();
-//                     let (mut t_r, _) = seed_r.pop_first_two_bits();
-//                     if cur_sign {
-//                         seed_l ^= &cur_cw;
-//                         seed_r ^= &cur_cw;
-//                         t_l ^= cw_t_l;
-//                         t_r ^= cw_t_r;
-//                     }
-//                     seeds[0] = seed_l;
-//                     seeds[1] = seed_r;
-//                     signs[0] = t_l;
-//                     signs[1] = t_r;
-//                 });
-//             (cur_seeds, next_seeds) = (next_seeds, cur_seeds);
-//             (cur_signs, next_signs) = (next_signs, cur_signs);
-//         }
-//         let last_cw = self.last_cw;
-//         let init_correction_bit = self.init_correction_bit;
-//         if init_correction_bit {
-//             cur_seeds
-//                 .iter()
-//                 .zip(cur_signs.iter())
-//                 .zip(output.iter_mut())
-//                 .for_each(move |((s, t), o)| {
-//                     let my_last_cw = Output::from(*s);
-//                     *o += if *t {
-//                         (my_last_cw + last_cw).neg()
-//                     } else {
-//                         (my_last_cw).neg()
-//                     };
-//                 });
-//         } else {
-//             cur_seeds
-//                 .iter()
-//                 .zip(cur_signs.iter())
-//                 .zip(output.iter_mut())
-//                 .for_each(move |((s, t), o)| {
-//                     let my_last_cw = Output::from(*s);
-//                     *o += if *t { my_last_cw + last_cw } else { my_last_cw };
-//                 });
-//         }
-//     }
-//     pub fn eval_all(&self) -> Vec<Output> {
-//         let mut output = vec![Output::default(); 1 << self.input_bits];
-//         let mut session = LvlDpfDmpfSession::get_session(1, self.input_bits);
-//         self.eval_all_xor_output_with_session(&mut output, &mut session);
-//         output
-//     }
-// pub fn int_to_bits(mut v: usize, width: usize) -> Vec<bool> {
-//     let mut output = vec![false; width];
-//     for i in 0..width {
-//         let b = v & 1 == 1;
-//         v >>= 1;
-//         output[width - i - 1] = b;
-//     }
-//     output
-// }
-
-// TODO: rewrite tests such that it uses the DpfDmpf for comparison with the LvlDpfDmpf
-// #[cfg(test)]
-// mod tests {
-//     use rand::{thread_rng, RngCore};
-
-//     use crate::field::PrimeField64x2;
-
-//     use super::{DpfKey, Node};
-
-//     #[test]
-//     fn test_dpf() {
-//         const DEPTH: usize = 12;
-//         let mut rng = thread_rng();
-//         let root_0 = Node::random(&mut rng);
-//         let root_1 = Node::random(&mut rng);
-//         let init_seeds = (root_0, root_1);
-//         let point = (rng.next_u64() & ((1 << DEPTH) - 1)) as u128;
-//         // let alpha_idx = [point << (128 - DEPTH)].into();
-//         let alpha_idx = point << (128 - DEPTH);
-//         let beta = PrimeField64x2::random(&mut rng);
-//         let (k_0, k_1) = DpfKey::gen(&init_seeds, &alpha_idx, DEPTH, &beta);
-//         let eval_all_0 = k_0.eval_all();
-//         let eval_all_1 = k_1.eval_all();
-//         for i in 0usize..1 << DEPTH {
-//             let input = (i as u128) << (128 - DEPTH);
-//             let mut bs_output_0 = PrimeField64x2::default();
-//             let mut bs_output_1 = PrimeField64x2::default();
-//             k_0.eval(&input, &mut bs_output_0);
-//             k_1.eval(&input, &mut bs_output_1);
-//             assert_eq!(bs_output_0, eval_all_0[i]);
-//             assert_eq!(bs_output_1, eval_all_1[i]);
-//             let bs_output = bs_output_0 + bs_output_1;
-//             if (i as u128) != point {
-//                 assert_eq!(bs_output, PrimeField64x2::default());
-//             }
-//             if (i as u128) == point {
-//                 // core::array::from_fn(|i| u128::from(bs_output_0[i] ^ bs_output_1[i])).into();
-//                 assert_eq!(bs_output, beta);
-//             }
-//         }
-//     }
-// }
